@@ -80,6 +80,17 @@ impl fmt::Debug for Metadata {
     }
 }
 
+/// Information about the metadata hashes used for a `Unit`.
+struct MetaInfo {
+    /// The symbol hash to use.
+    meta_hash: Metadata,
+    /// Whether or not the `-C extra-filename` flag is used to generate unique
+    /// output filenames for this `Unit`.
+    ///
+    /// If this is `true`, the `meta_hash` is used for the filename.
+    use_extra_filename: bool,
+}
+
 /// Collection of information about the files emitted by the compiler, and the
 /// output directory structure.
 pub struct CompilationFiles<'a, 'cfg> {
@@ -94,7 +105,7 @@ pub struct CompilationFiles<'a, 'cfg> {
     roots: Vec<Unit>,
     ws: &'a Workspace<'cfg>,
     /// Metadata hash to use for each unit.
-    metas: HashMap<Unit, Option<Metadata>>,
+    metas: HashMap<Unit, MetaInfo>,
     /// For each Unit, a list all files produced.
     outputs: HashMap<Unit, LazyCell<Arc<Vec<OutputFile>>>>,
 }
@@ -160,11 +171,14 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
     /// Gets the metadata for the given unit.
     ///
     /// See module docs for more details.
-    ///
-    /// Returns `None` if the unit should not use a metadata hash (like
-    /// rustdoc, or some dylibs).
-    pub fn metadata(&self, unit: &Unit) -> Option<Metadata> {
-        self.metas[unit]
+    pub fn metadata(&self, unit: &Unit) -> Metadata {
+        self.metas[unit].meta_hash
+    }
+
+    /// Returns whether or not `-C extra-filename` is used to extend the
+    /// output filenames to make them unique.
+    pub fn use_extra_filename(&self, unit: &Unit) -> bool {
+        self.metas[unit].use_extra_filename
     }
 
     /// Gets the short hash based only on the `PackageId`.
@@ -201,9 +215,11 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
     /// taken in those cases!
     fn pkg_dir(&self, unit: &Unit) -> String {
         let name = unit.pkg.package_id().name();
-        match self.metas[unit] {
-            Some(ref meta) => format!("{}-{}", name, meta),
-            None => format!("{}-{}", name, self.target_short_hash(unit)),
+        let meta = &self.metas[unit];
+        if meta.use_extra_filename {
+            format!("{}-{}", name, meta.meta_hash)
+        } else {
+            format!("{}-{}", name, self.target_short_hash(unit))
         }
     }
 
@@ -448,8 +464,12 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
         // Convert FileType to OutputFile.
         let mut outputs = Vec::new();
         for file_type in file_types {
-            let meta = self.metadata(unit).map(|m| m.to_string());
-            let path = out_dir.join(file_type.output_filename(&unit.target, meta.as_deref()));
+            let meta = &self.metas[unit];
+            let meta_opt = meta.use_extra_filename.then(|| meta.meta_hash.to_string());
+            let path = out_dir.join(file_type.output_filename(&unit.target, meta_opt.as_deref()));
+
+            // If, the `different_binary_name` feature is enabled, the name of the hardlink will
+            // be the name of the binary provided by the user in `Cargo.toml`.
             let hardlink = self.uplift_to(unit, &file_type, &path);
             let export_path = if unit.target.is_custom_build() {
                 None
@@ -471,11 +491,11 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
     }
 }
 
-fn metadata_of(
+fn metadata_of<'a>(
     unit: &Unit,
     cx: &Context<'_, '_>,
-    metas: &mut HashMap<Unit, Option<Metadata>>,
-) -> Option<Metadata> {
+    metas: &'a mut HashMap<Unit, MetaInfo>,
+) -> &'a MetaInfo {
     if !metas.contains_key(unit) {
         let meta = compute_metadata(unit, cx, metas);
         metas.insert(unit.clone(), meta);
@@ -483,18 +503,15 @@ fn metadata_of(
             metadata_of(&dep.unit, cx, metas);
         }
     }
-    metas[unit]
+    &metas[unit]
 }
 
 fn compute_metadata(
     unit: &Unit,
     cx: &Context<'_, '_>,
-    metas: &mut HashMap<Unit, Option<Metadata>>,
-) -> Option<Metadata> {
+    metas: &mut HashMap<Unit, MetaInfo>,
+) -> MetaInfo {
     let bcx = &cx.bcx;
-    if !should_use_metadata(bcx, unit) {
-        return None;
-    }
     let mut hasher = StableHasher::new();
 
     METADATA_VERSION.hash(&mut hasher);
@@ -514,7 +531,7 @@ fn compute_metadata(
     let mut deps_metadata = cx
         .unit_deps(unit)
         .iter()
-        .map(|dep| metadata_of(&dep.unit, cx, metas))
+        .map(|dep| metadata_of(&dep.unit, cx, metas).meta_hash)
         .collect::<Vec<_>>();
     deps_metadata.sort();
     deps_metadata.hash(&mut hasher);
@@ -561,7 +578,10 @@ fn compute_metadata(
     // with user dependencies.
     unit.is_std.hash(&mut hasher);
 
-    Some(Metadata(hasher.finish()))
+    MetaInfo {
+        meta_hash: Metadata(hasher.finish()),
+        use_extra_filename: should_use_metadata(bcx, unit),
+    }
 }
 
 fn hash_rustc_version(bcx: &BuildContext<'_, '_>, hasher: &mut StableHasher) {
@@ -578,7 +598,7 @@ fn hash_rustc_version(bcx: &BuildContext<'_, '_>, hasher: &mut StableHasher) {
     //
     // This assumes that the first segment is the important bit ("nightly",
     // "beta", "dev", etc.). Skip other parts like the `.3` in `-beta.3`.
-    vers.pre[0].hash(hasher);
+    vers.pre.split('.').next().hash(hasher);
     // Keep "host" since some people switch hosts to implicitly change
     // targets, (like gnu vs musl or gnu vs msvc). In the future, we may want
     // to consider hashing `unit.kind.short_name()` instead.
@@ -598,7 +618,7 @@ fn hash_rustc_version(bcx: &BuildContext<'_, '_>, hasher: &mut StableHasher) {
 
 /// Returns whether or not this unit should use a metadata hash.
 fn should_use_metadata(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
-    if unit.mode.is_doc_test() {
+    if unit.mode.is_doc_test() || unit.mode.is_doc() {
         // Doc tests do not have metadata.
         return false;
     }
@@ -609,19 +629,13 @@ fn should_use_metadata(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
     // No metadata in these cases:
     //
     // - dylibs:
-    //   - macOS encodes the dylib name in the executable, so it can't be renamed.
-    //   - TODO: Are there other good reasons? If not, maybe this should be macos specific?
+    //   - if any dylib names are encoded in executables, so they can't be renamed.
+    //   - TODO: Maybe use `-install-name` on macOS or `-soname` on other UNIX systems
+    //     to specify the dylib name to be used by the linker instead of the filename.
     // - Windows MSVC executables: The path to the PDB is embedded in the
     //   executable, and we don't want the PDB path to include the hash in it.
-    // - wasm32 executables: When using emscripten, the path to the .wasm file
-    //   is embedded in the .js file, so we don't want the hash in there.
-    //   TODO: Is this necessary for wasm32-unknown-unknown?
-    // - apple executables: The executable name is used in the dSYM directory
-    //   (such as `target/debug/foo.dSYM/Contents/Resources/DWARF/foo-64db4e4bf99c12dd`).
-    //   Unfortunately this causes problems with our current backtrace
-    //   implementation which looks for a file matching the exe name exactly.
-    //   See https://github.com/rust-lang/rust/issues/72550#issuecomment-638501691
-    //   for more details.
+    // - wasm32-unknown-emscripten executables: When using emscripten, the path to the
+    //   .wasm file is embedded in the .js file, so we don't want the hash in there.
     //
     // This is only done for local packages, as we don't expect to export
     // dependencies.
@@ -630,14 +644,14 @@ fn should_use_metadata(bcx: &BuildContext<'_, '_>, unit: &Unit) -> bool {
     // force metadata in the hash. This is only used for building libstd. For
     // example, if libstd is placed in a common location, we don't want a file
     // named /usr/lib/libstd.so which could conflict with other rustc
-    // installs. TODO: Is this still a realistic concern?
+    // installs. In addition it prevents accidentally loading a libstd of a
+    // different compiler at runtime.
     // See https://github.com/rust-lang/cargo/issues/3005
     let short_name = bcx.target_data.short_name(&unit.kind);
     if (unit.target.is_dylib()
         || unit.target.is_cdylib()
-        || (unit.target.is_executable() && short_name.starts_with("wasm32-"))
-        || (unit.target.is_executable() && short_name.contains("msvc"))
-        || (unit.target.is_executable() && short_name.contains("-apple-")))
+        || (unit.target.is_executable() && short_name == "wasm32-unknown-emscripten")
+        || (unit.target.is_executable() && short_name.contains("msvc")))
         && unit.pkg.package_id().source_id().is_path()
         && env::var("__CARGO_DEFAULT_LIB_METADATA").is_err()
     {

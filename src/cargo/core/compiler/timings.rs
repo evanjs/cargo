@@ -529,7 +529,7 @@ impl<'cfg> Timings<'cfg> {
                     target: ut.target.clone(),
                     start: round(ut.start),
                     duration: round(ut.duration),
-                    rmeta_time: ut.rmeta_time.map(|t| round(t)),
+                    rmeta_time: ut.rmeta_time.map(round),
                     unlocked_units,
                     unlocked_rmeta_units,
                 }
@@ -643,7 +643,7 @@ fn render_rustc_info(bcx: &BuildContext<'_, '_>) -> String {
 static HTML_TMPL: &str = r#"
 <html>
 <head>
-  <title>Cargo Build Timings — {ROOTS}</title>
+  <title>Cargo Build Timings — {ROOTS}</title>
   <meta charset="utf-8">
 <style type="text/css">
 html {

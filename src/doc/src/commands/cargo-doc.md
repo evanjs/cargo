@@ -22,7 +22,9 @@ is placed in `target/doc` in rustdoc's usual format.
 
 <dt class="option-term" id="option-cargo-doc---open"><a class="option-anchor" href="#option-cargo-doc---open"></a><code>--open</code></dt>
 <dd class="option-desc">Open the docs in a browser after building them. This will use your default
-browser unless you define another one in the <code>BROWSER</code> environment variable.</dd>
+browser unless you define another one in the <code>BROWSER</code> environment variable
+or use the <a href="../reference/config.html#docbrowser"><code>doc.browser</code></a> configuration
+option.</dd>
 
 
 <dt class="option-term" id="option-cargo-doc---no-deps"><a class="option-anchor" href="#option-cargo-doc---no-deps"></a><code>--no-deps</code></dt>
@@ -30,7 +32,7 @@ browser unless you define another one in the <code>BROWSER</code> environment va
 
 
 <dt class="option-term" id="option-cargo-doc---document-private-items"><a class="option-anchor" href="#option-cargo-doc---document-private-items"></a><code>--document-private-items</code></dt>
-<dd class="option-desc">Include non-public items in the documentation.</dd>
+<dd class="option-desc">Include non-public items in the documentation. This will be enabled by default if documenting a binary target.</dd>
 
 
 </dl>
@@ -156,6 +158,12 @@ target artifacts are placed in a separate directory. See the
 <dd class="option-desc">Document optimized artifacts with the <code>release</code> profile. See the
 <a href="#profiles">PROFILES</a> section for details on how this affects profile
 selection.</dd>
+
+
+
+<dt class="option-term" id="option-cargo-doc---ignore-rust-version"><a class="option-anchor" href="#option-cargo-doc---ignore-rust-version"></a><code>--ignore-rust-version</code></dt>
+<dd class="option-desc">Document the target even if the selected Rust compiler is older than the
+required Rust version as configured in the project's <code>rust-version</code> field.</dd>
 
 
 

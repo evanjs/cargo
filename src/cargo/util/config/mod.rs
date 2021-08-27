@@ -178,6 +178,7 @@ pub struct Config {
     package_cache_lock: RefCell<Option<(Option<FileLock>, usize)>>,
     /// Cached configuration parsed by Cargo
     http_config: LazyCell<CargoHttpConfig>,
+    future_incompat_config: LazyCell<CargoFutureIncompatConfig>,
     net_config: LazyCell<CargoNetConfig>,
     build_config: LazyCell<CargoBuildConfig>,
     target_cfgs: LazyCell<Vec<(String, TargetCfgConfig)>>,
@@ -187,14 +188,14 @@ pub struct Config {
     /// This should be false if:
     /// - this is an artifact of the rustc distribution process for "stable" or for "beta"
     /// - this is an `#[test]` that does not opt in with `enable_nightly_features`
-    /// - this is a integration test that uses `ProcessBuilder`
+    /// - this is an integration test that uses `ProcessBuilder`
     ///      that does not opt in with `masquerade_as_nightly_cargo`
     /// This should be true if:
     /// - this is an artifact of the rustc distribution process for "nightly"
     /// - this is being used in the rustc distribution process internally
     /// - this is a cargo executable that was built from source
     /// - this is an `#[test]` that called `enable_nightly_features`
-    /// - this is a integration test that uses `ProcessBuilder`
+    /// - this is an integration test that uses `ProcessBuilder`
     ///       that called `masquerade_as_nightly_cargo`
     /// It's public to allow tests use nightly features.
     /// NOTE: this should be set before `configure()`. If calling this from an integration test,
@@ -232,14 +233,11 @@ impl Config {
             })
             .collect();
 
-        let upper_case_env = if cfg!(windows) {
-            HashMap::new()
-        } else {
-            env.clone()
-                .into_iter()
-                .map(|(k, _)| (k.to_uppercase().replace("-", "_"), k))
-                .collect()
-        };
+        let upper_case_env = env
+            .clone()
+            .into_iter()
+            .map(|(k, _)| (k.to_uppercase().replace("-", "_"), k))
+            .collect();
 
         let cache_rustc_info = match env.get("CARGO_CACHE_RUSTC_INFO") {
             Some(cache) => cache != "0",
@@ -278,6 +276,7 @@ impl Config {
             updated_sources: LazyCell::new(),
             package_cache_lock: RefCell::new(None),
             http_config: LazyCell::new(),
+            future_incompat_config: LazyCell::new(),
             net_config: LazyCell::new(),
             build_config: LazyCell::new(),
             target_cfgs: LazyCell::new(),
@@ -696,12 +695,6 @@ impl Config {
     }
 
     fn check_environment_key_case_mismatch(&self, key: &ConfigKey) {
-        if cfg!(windows) {
-            // In the case of windows the check for case mismatch in keys can be skipped
-            // as windows already converts its environment keys into the desired format.
-            return;
-        }
-
         if let Some(env_key) = self.upper_case_env.get(key.as_env_key()) {
             let _ = self.shell().warn(format!(
                 "Environment variables are expected to use uppercase letters and underscores, \
@@ -732,7 +725,7 @@ impl Config {
         })
     }
 
-    fn string_to_path(&self, value: String, definition: &Definition) -> PathBuf {
+    fn string_to_path(&self, value: &str, definition: &Definition) -> PathBuf {
         let is_path = value.contains('/') || (cfg!(windows) && value.contains('\\'));
         if is_path {
             definition.root(self).join(value)
@@ -843,7 +836,7 @@ impl Config {
         Ok(())
     }
 
-    /// Low-level method for getting a config value as a `OptValue<HashMap<String, CV>>`.
+    /// Low-level method for getting a config value as an `OptValue<HashMap<String, CV>>`.
     ///
     /// NOTE: This does not read from env. The caller is responsible for that.
     fn get_table(&self, key: &ConfigKey) -> CargoResult<OptValue<HashMap<String, CV>>> {
@@ -1391,7 +1384,11 @@ impl Config {
 
     /// Looks for a path for `tool` in an environment variable or the given config, and returns
     /// `None` if it's not present.
-    fn maybe_get_tool(&self, tool: &str, from_config: &Option<PathBuf>) -> Option<PathBuf> {
+    fn maybe_get_tool(
+        &self,
+        tool: &str,
+        from_config: &Option<ConfigRelativePath>,
+    ) -> Option<PathBuf> {
         let var = tool.to_uppercase();
 
         match env::var_os(&var) {
@@ -1408,13 +1405,13 @@ impl Config {
                 Some(path)
             }
 
-            None => from_config.clone(),
+            None => from_config.as_ref().map(|p| p.resolve_program(self)),
         }
     }
 
     /// Looks for a path for `tool` in an environment variable or config path, defaulting to `tool`
     /// as a path.
-    fn get_tool(&self, tool: &str, from_config: &Option<PathBuf>) -> PathBuf {
+    fn get_tool(&self, tool: &str, from_config: &Option<ConfigRelativePath>) -> PathBuf {
         self.maybe_get_tool(tool, from_config)
             .unwrap_or_else(|| PathBuf::from(tool))
     }
@@ -1439,6 +1436,11 @@ impl Config {
     pub fn http_config(&self) -> CargoResult<&CargoHttpConfig> {
         self.http_config
             .try_borrow_with(|| self.get::<CargoHttpConfig>("http"))
+    }
+
+    pub fn future_incompat_config(&self) -> CargoResult<&CargoFutureIncompatConfig> {
+        self.future_incompat_config
+            .try_borrow_with(|| self.get::<CargoFutureIncompatConfig>("future-incompat-report"))
     }
 
     pub fn net_config(&self) -> CargoResult<&CargoNetConfig> {
@@ -1484,6 +1486,16 @@ impl Config {
         // nothing to query. Plumbing the name into SourceId is quite challenging.
         self.doc_extern_map
             .try_borrow_with(|| self.get::<RustdocExternMap>("doc.extern-map"))
+    }
+
+    /// Returns true if the `[target]` table should be applied to host targets.
+    pub fn target_applies_to_host(&self) -> CargoResult<bool> {
+        target::get_target_applies_to_host(self)
+    }
+
+    /// Returns the `[host]` table definition for the given target triple.
+    pub fn host_cfg_triple(&self, target: &str) -> CargoResult<TargetConfig> {
+        target::load_host_triple(self, target)
     }
 
     /// Returns the `[target]` table definition for the given target triple.
@@ -2029,6 +2041,37 @@ pub struct CargoHttpConfig {
     pub ssl_version: Option<SslVersionConfig>,
 }
 
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct CargoFutureIncompatConfig {
+    frequency: Option<CargoFutureIncompatFrequencyConfig>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CargoFutureIncompatFrequencyConfig {
+    Always,
+    Never,
+}
+
+impl CargoFutureIncompatConfig {
+    pub fn should_display_message(&self) -> bool {
+        use CargoFutureIncompatFrequencyConfig::*;
+
+        let frequency = self.frequency.as_ref().unwrap_or(&Always);
+        match frequency {
+            Always => true,
+            Never => false,
+        }
+    }
+}
+
+impl Default for CargoFutureIncompatFrequencyConfig {
+    fn default() -> Self {
+        Self::Always
+    }
+}
+
 /// Configuration for `ssl-version` in `http` section
 /// There are two ways to configure:
 ///
@@ -2074,10 +2117,10 @@ pub struct CargoBuildConfig {
     pub jobs: Option<u32>,
     pub rustflags: Option<StringList>,
     pub rustdocflags: Option<StringList>,
-    pub rustc_wrapper: Option<PathBuf>,
-    pub rustc_workspace_wrapper: Option<PathBuf>,
-    pub rustc: Option<PathBuf>,
-    pub rustdoc: Option<PathBuf>,
+    pub rustc_wrapper: Option<ConfigRelativePath>,
+    pub rustc_workspace_wrapper: Option<ConfigRelativePath>,
+    pub rustc: Option<ConfigRelativePath>,
+    pub rustdoc: Option<ConfigRelativePath>,
     pub out_dir: Option<ConfigRelativePath>,
 }
 

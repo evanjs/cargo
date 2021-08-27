@@ -292,7 +292,7 @@ enabled. Some options to try:
 * `cargo tree -e features`: This will show features in the dependency graph.
   Each feature will appear showing which package enabled it.
 * `cargo tree -f "{p} {f}"`: This is a more compact view that shows a
-  comma-spearated list of features enabled on each package.
+  comma-separated list of features enabled on each package.
 * `cargo tree -e features -i foo`: This will invert the tree, showing how
   features flow into the given package "foo". This can be useful because
   viewing the entire graph can be quite large and overwhelming. Use this when
@@ -440,7 +440,7 @@ guide, consider adding the documentation there (for example, see [serde.rs]).
 If you have a binary project, consider documenting the features in the README
 or other documentation for the project (for example, see [sccache]).
 
-Clearly documenting the features can set expectations about features
+Clearly documenting the features can set expectations about features that are
 considered "unstable" or otherwise shouldn't be used. For example, if there is
 an optional dependency, but you don't want users to explicitly list that
 optional dependency as a feature, exclude it from the documented list.

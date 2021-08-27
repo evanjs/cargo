@@ -19,7 +19,8 @@ dashes (`--`) are passed to the test binaries and thus to _libtest_ (rustc's
 built in unit-test and micro-benchmarking framework).  If you're passing
 arguments to both Cargo and the binary, the ones after `--` go to the binary,
 the ones before go to Cargo.  For details about libtest's arguments see the
-output of `cargo test -- --help`.
+output of `cargo test -- --help` and check out the rustc book's chapter on
+how tests work at <https://doc.rust-lang.org/rustc/tests/index.html>.
 
 As an example, this will filter for tests with `foo` in their name and run them
 on 3 threads in parallel:
@@ -265,6 +266,12 @@ target artifacts are placed in a separate directory. See the
 <dd class="option-desc">Test optimized artifacts with the <code>release</code> profile. See the
 <a href="#profiles">PROFILES</a> section for details on how this affects profile
 selection.</dd>
+
+
+
+<dt class="option-term" id="option-cargo-test---ignore-rust-version"><a class="option-anchor" href="#option-cargo-test---ignore-rust-version"></a><code>--ignore-rust-version</code></dt>
+<dd class="option-desc">Test the target even if the selected Rust compiler is older than the
+required Rust version as configured in the project's <code>rust-version</code> field.</dd>
 
 
 

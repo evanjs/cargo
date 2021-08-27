@@ -38,7 +38,9 @@ or the `build.rustdocflags` [config value](../reference/config.html).
 
 <dt class="option-term" id="option-cargo-rustdoc---open"><a class="option-anchor" href="#option-cargo-rustdoc---open"></a><code>--open</code></dt>
 <dd class="option-desc">Open the docs in a browser after building them. This will use your default
-browser unless you define another one in the <code>BROWSER</code> environment variable.</dd>
+browser unless you define another one in the <code>BROWSER</code> environment variable
+or use the <a href="../reference/config.html#docbrowser"><code>doc.browser</code></a> configuration
+option.</dd>
 
 
 </dl>
@@ -185,6 +187,12 @@ target artifacts are placed in a separate directory. See the
 <dd class="option-desc">Document optimized artifacts with the <code>release</code> profile. See the
 <a href="#profiles">PROFILES</a> section for details on how this affects profile
 selection.</dd>
+
+
+
+<dt class="option-term" id="option-cargo-rustdoc---ignore-rust-version"><a class="option-anchor" href="#option-cargo-rustdoc---ignore-rust-version"></a><code>--ignore-rust-version</code></dt>
+<dd class="option-desc">Document the target even if the selected Rust compiler is older than the
+required Rust version as configured in the project's <code>rust-version</code> field.</dd>
 
 
 

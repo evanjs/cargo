@@ -15,6 +15,7 @@ use serde::ser;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::core::compiler::{CompileKind, CompileTarget};
 use crate::core::dependency::DepKind;
 use crate::core::manifest::{ManifestMetadata, TargetSourcePath, Warnings};
 use crate::core::resolver::ResolveBehavior;
@@ -24,7 +25,9 @@ use crate::core::{GitReference, PackageIdSpec, SourceId, WorkspaceConfig, Worksp
 use crate::sources::{CRATES_IO_INDEX, CRATES_IO_REGISTRY};
 use crate::util::errors::{CargoResult, ManifestError};
 use crate::util::interning::InternedString;
-use crate::util::{self, config::ConfigRelativePath, validate_package_name, Config, IntoUrl};
+use crate::util::{
+    self, config::ConfigRelativePath, validate_package_name, Config, IntoUrl, VersionReqExt,
+};
 
 mod targets;
 use self::targets::targets;
@@ -34,7 +37,7 @@ use self::targets::targets;
 /// This could result in a real or virtual manifest being returned.
 ///
 /// A list of nested paths is also returned, one for each path dependency
-/// within the manfiest. For virtual manifests, these paths can only
+/// within the manifest. For virtual manifests, these paths can only
 /// come from patched or replaced dependencies. These paths are not
 /// canonicalized.
 pub fn read_manifest(
@@ -73,7 +76,7 @@ fn do_read_manifest(
     if let Some(package) = toml.get("package").or_else(|| toml.get("project")) {
         if let Some(feats) = package.get("cargo-features") {
             bail!(
-                "cargo-features = {} was found in the wrong location, it \
+                "cargo-features = {} was found in the wrong location: it \
                  should be set at the top of Cargo.toml before any tables",
                 toml::to_string(feats).unwrap()
             );
@@ -394,7 +397,7 @@ impl<'de> de::Deserialize<'de> for TomlOptLevel {
                     Ok(TomlOptLevel(value.to_string()))
                 } else {
                     Err(E::custom(format!(
-                        "must be an integer, `z`, or `s`, \
+                        "must be `0`, `1`, `2`, `3`, `s` or `z`, \
                          but found the string: \"{}\"",
                         value
                     )))
@@ -430,6 +433,7 @@ pub enum U32OrBool {
 pub struct TomlProfile {
     pub opt_level: Option<TomlOptLevel>,
     pub lto: Option<StringOrBool>,
+    pub codegen_backend: Option<InternedString>,
     pub codegen_units: Option<u32>,
     pub debug: Option<U32OrBool>,
     pub split_debuginfo: Option<String>,
@@ -438,11 +442,13 @@ pub struct TomlProfile {
     pub panic: Option<String>,
     pub overflow_checks: Option<bool>,
     pub incremental: Option<bool>,
-    pub package: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
-    pub build_override: Option<Box<TomlProfile>>,
     pub dir_name: Option<InternedString>,
     pub inherits: Option<InternedString>,
     pub strip: Option<StringOrBool>,
+    // These two fields must be last because they are sub-tables, and TOML
+    // requires all non-tables to be listed first.
+    pub package: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
+    pub build_override: Option<Box<TomlProfile>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -486,18 +492,14 @@ impl TomlProfile {
         features: &Features,
         warnings: &mut Vec<String>,
     ) -> CargoResult<()> {
-        if name == "debug" {
-            warnings.push("use `[profile.dev]` to configure debug builds".to_string());
-        }
-
         if let Some(ref profile) = self.build_override {
             features.require(Feature::profile_overrides())?;
-            profile.validate_override("build-override")?;
+            profile.validate_override("build-override", features)?;
         }
         if let Some(ref packages) = self.package {
             features.require(Feature::profile_overrides())?;
             for profile in packages.values() {
-                profile.validate_override("package")?;
+                profile.validate_override("package", features)?;
             }
         }
 
@@ -510,31 +512,32 @@ impl TomlProfile {
         }
 
         // Profile name validation
-        Self::validate_name(name, "profile name")?;
+        Self::validate_name(name)?;
 
         // Feature gate on uses of keys related to named profiles
         if self.inherits.is_some() {
             features.require(Feature::named_profiles())?;
         }
 
-        if self.dir_name.is_some() {
-            features.require(Feature::named_profiles())?;
-        }
-
-        // `dir-name` validation
-        match &self.dir_name {
-            None => {}
-            Some(dir_name) => {
-                Self::validate_name(dir_name, "dir-name")?;
-            }
+        if let Some(dir_name) = self.dir_name {
+            // This is disabled for now, as we would like to stabilize named
+            // profiles without this, and then decide in the future if it is
+            // needed. This helps simplify the UI a little.
+            bail!(
+                "dir-name=\"{}\" in profile `{}` is not currently allowed, \
+                 directory names are tied to the profile name for custom profiles",
+                dir_name,
+                name
+            );
         }
 
         // `inherits` validation
-        match &self.inherits {
-            None => {}
-            Some(inherits) => {
-                Self::validate_name(inherits, "inherits")?;
-            }
+        if matches!(self.inherits.map(|s| s.as_str()), Some("debug")) {
+            bail!(
+                "profile.{}.inherits=\"debug\" should be profile.{}.inherits=\"dev\"",
+                name,
+                name
+            );
         }
 
         match name {
@@ -552,7 +555,7 @@ impl TomlProfile {
         if let Some(panic) = &self.panic {
             if panic != "unwind" && panic != "abort" {
                 bail!(
-                    "`panic` setting of `{}` is not a valid setting,\
+                    "`panic` setting of `{}` is not a valid setting, \
                      must be `unwind` or `abort`",
                     panic
                 );
@@ -562,39 +565,100 @@ impl TomlProfile {
         if self.strip.is_some() {
             features.require(Feature::strip())?;
         }
+
+        if let Some(codegen_backend) = &self.codegen_backend {
+            features.require(Feature::codegen_backend())?;
+            if codegen_backend.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+                bail!(
+                    "`profile.{}.codegen-backend` setting of `{}` is not a valid backend name.",
+                    name,
+                    codegen_backend,
+                );
+            }
+        }
+
         Ok(())
     }
 
     /// Validate dir-names and profile names according to RFC 2678.
-    pub fn validate_name(name: &str, what: &str) -> CargoResult<()> {
+    pub fn validate_name(name: &str) -> CargoResult<()> {
         if let Some(ch) = name
             .chars()
             .find(|ch| !ch.is_alphanumeric() && *ch != '_' && *ch != '-')
         {
-            bail!("Invalid character `{}` in {}: `{}`", ch, what, name);
+            bail!(
+                "invalid character `{}` in profile name `{}`\n\
+                Allowed characters are letters, numbers, underscore, and hyphen.",
+                ch,
+                name
+            );
         }
 
-        match name {
-            "package" | "build" => {
-                bail!("Invalid {}: `{}`", what, name);
-            }
-            "debug" if what == "profile" => {
-                if what == "profile name" {
-                    // Allowed, but will emit warnings
-                } else {
-                    bail!("Invalid {}: `{}`", what, name);
-                }
-            }
-            "doc" if what == "dir-name" => {
-                bail!("Invalid {}: `{}`", what, name);
-            }
-            _ => {}
+        const SEE_DOCS: &str = "See https://doc.rust-lang.org/cargo/reference/profiles.html \
+            for more on configuring profiles.";
+
+        let lower_name = name.to_lowercase();
+        if lower_name == "debug" {
+            bail!(
+                "profile name `{}` is reserved\n\
+                 To configure the default development profile, use the name `dev` \
+                 as in [profile.dev]\n\
+                {}",
+                name,
+                SEE_DOCS
+            );
+        }
+        if lower_name == "build-override" {
+            bail!(
+                "profile name `{}` is reserved\n\
+                 To configure build dependency settings, use [profile.dev.build-override] \
+                 and [profile.release.build-override]\n\
+                 {}",
+                name,
+                SEE_DOCS
+            );
+        }
+
+        // These are some arbitrary reservations. We have no plans to use
+        // these, but it seems safer to reserve a few just in case we want to
+        // add more built-in profiles in the future. We can also uses special
+        // syntax like cargo:foo if needed. But it is unlikely these will ever
+        // be used.
+        if matches!(
+            lower_name.as_str(),
+            "build"
+                | "check"
+                | "clean"
+                | "config"
+                | "fetch"
+                | "fix"
+                | "install"
+                | "metadata"
+                | "package"
+                | "publish"
+                | "report"
+                | "root"
+                | "run"
+                | "rust"
+                | "rustc"
+                | "rustdoc"
+                | "tmp"
+                | "uninstall"
+        ) || lower_name.starts_with("cargo")
+        {
+            bail!(
+                "profile name `{}` is reserved\n\
+                 Please choose a different name.\n\
+                 {}",
+                name,
+                SEE_DOCS
+            );
         }
 
         Ok(())
     }
 
-    fn validate_override(&self, which: &str) -> CargoResult<()> {
+    fn validate_override(&self, which: &str, features: &Features) -> CargoResult<()> {
         if self.package.is_some() {
             bail!("package-specific profiles cannot be nested");
         }
@@ -610,6 +674,9 @@ impl TomlProfile {
         if self.rpath.is_some() {
             bail!("`rpath` may not be specified in a `{}` profile", which)
         }
+        if self.codegen_backend.is_some() {
+            features.require(Feature::codegen_backend())?;
+        }
         Ok(())
     }
 
@@ -621,6 +688,10 @@ impl TomlProfile {
 
         if let Some(v) = &profile.lto {
             self.lto = Some(v.clone());
+        }
+
+        if let Some(v) = profile.codegen_backend {
+            self.codegen_backend = Some(v);
         }
 
         if let Some(v) = profile.codegen_units {
@@ -692,7 +763,9 @@ impl TomlProfile {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+/// A StringOrVec can be parsed from either a TOML string or array,
+/// but is always stored as a vector.
+#[derive(Clone, Debug, Serialize, Eq, PartialEq, PartialOrd, Ord)]
 pub struct StringOrVec(Vec<String>);
 
 impl<'de> de::Deserialize<'de> for StringOrVec {
@@ -726,6 +799,12 @@ impl<'de> de::Deserialize<'de> for StringOrVec {
         }
 
         deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl StringOrVec {
+    pub fn iter<'a>(&'a self) -> std::slice::Iter<'a, String> {
+        self.0.iter()
     }
 }
 
@@ -777,6 +856,30 @@ impl<'de> de::Deserialize<'de> for VecStringOrBool {
     }
 }
 
+fn version_trim_whitespace<'de, D>(deserializer: D) -> Result<semver::Version, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> de::Visitor<'de> for Visitor {
+        type Value = semver::Version;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("SemVer version")
+        }
+
+        fn visit_str<E>(self, string: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            string.trim().parse().map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_str(Visitor)
+}
+
 /// Represents the `package`/`project` sections of a `Cargo.toml`.
 ///
 /// Note that the order of the fields matters, since this is the order they
@@ -789,10 +892,15 @@ pub struct TomlProject {
     edition: Option<String>,
     rust_version: Option<String>,
     name: InternedString,
+    #[serde(deserialize_with = "version_trim_whitespace")]
     version: semver::Version,
     authors: Option<Vec<String>>,
     build: Option<StringOrBool>,
     metabuild: Option<StringOrVec>,
+    #[serde(rename = "default-target")]
+    default_target: Option<String>,
+    #[serde(rename = "forced-target")]
+    forced_target: Option<String>,
     links: Option<String>,
     exclude: Option<Vec<String>>,
     include: Option<Vec<String>>,
@@ -842,7 +950,6 @@ impl TomlProject {
 }
 
 struct Context<'a, 'b> {
-    pkgid: Option<PackageId>,
     deps: &'a mut Vec<Dependency>,
     source_id: SourceId,
     nested_paths: &'a mut Vec<PathBuf>,
@@ -1011,7 +1118,7 @@ impl TomlManifest {
         // Parse features first so they will be available when parsing other parts of the TOML.
         let empty = Vec::new();
         let cargo_features = me.cargo_features.as_ref().unwrap_or(&empty);
-        let features = Features::new(cargo_features, config, &mut warnings)?;
+        let features = Features::new(cargo_features, config, &mut warnings, source_id.is_path())?;
 
         let project = me.project.as_ref().or_else(|| me.package.as_ref());
         let project = project.ok_or_else(|| anyhow!("no `package` section found"))?;
@@ -1046,46 +1153,25 @@ impl TomlManifest {
         }
 
         let rust_version = if let Some(rust_version) = &project.rust_version {
-            if features.require(Feature::rust_version()).is_err() {
-                let mut msg =
-                    "`rust-version` is not supported on this version of Cargo and will be ignored"
-                        .to_string();
-                if config.nightly_features_allowed {
-                    msg.push_str(
-                        "\n\n\
-                        consider adding `cargo-features = [\"rust-version\"]` to the manifest",
-                    );
-                } else {
-                    msg.push_str(
-                        "\n\n\
-                        this Cargo does not support nightly features, but if you\n\
-                        switch to nightly channel you can add\n\
-                        `cargo-features = [\"rust-version\"]` to enable this feature",
-                    );
+            let req = match semver::VersionReq::parse(rust_version) {
+                // Exclude semver operators like `^` and pre-release identifiers
+                Ok(req) if rust_version.chars().all(|c| c.is_ascii_digit() || c == '.') => req,
+                _ => bail!("`rust-version` must be a value like \"1.32\""),
+            };
+            if let Some(first_version) = edition.first_version() {
+                let unsupported =
+                    semver::Version::new(first_version.major, first_version.minor - 1, 9999);
+                if req.matches(&unsupported) {
+                    bail!(
+                        "rust-version {} is older than first version ({}) required by \
+                            the specified edition ({})",
+                        rust_version,
+                        first_version,
+                        edition,
+                    )
                 }
-                warnings.push(msg);
-                None
-            } else {
-                let req = match semver::VersionReq::parse(rust_version) {
-                    // Exclude semver operators like `^` and pre-release identifiers
-                    Ok(req) if rust_version.chars().all(|c| c.is_ascii_digit() || c == '.') => req,
-                    _ => bail!("`rust-version` must be a value like \"1.32\""),
-                };
-                if let Some(first_version) = edition.first_version() {
-                    let unsupported =
-                        semver::Version::new(first_version.major, first_version.minor - 1, 9999);
-                    if req.matches(&unsupported) {
-                        bail!(
-                            "rust-version {} is older than first version ({}) required by \
-                                the specified edition ({})",
-                            rust_version,
-                            first_version,
-                            edition,
-                        )
-                    }
-                }
-                Some(rust_version.clone())
             }
+            Some(rust_version.clone())
         } else {
             None
         };
@@ -1157,7 +1243,6 @@ impl TomlManifest {
 
         {
             let mut cx = Context {
-                pkgid: Some(pkgid),
                 deps: &mut deps,
                 source_id,
                 nested_paths: &mut nested_paths,
@@ -1313,9 +1398,24 @@ impl TomlManifest {
             }
         }
 
+        let default_kind = project
+            .default_target
+            .as_ref()
+            .map(|t| CompileTarget::new(&*t))
+            .transpose()?
+            .map(CompileKind::Target);
+        let forced_kind = project
+            .forced_target
+            .as_ref()
+            .map(|t| CompileTarget::new(&*t))
+            .transpose()?
+            .map(CompileKind::Target);
+
         let custom_metadata = project.metadata.clone();
         let mut manifest = Manifest::new(
             summary,
+            default_kind,
+            forced_kind,
             targets,
             exclude,
             include,
@@ -1406,11 +1506,10 @@ impl TomlManifest {
         let mut deps = Vec::new();
         let empty = Vec::new();
         let cargo_features = me.cargo_features.as_ref().unwrap_or(&empty);
-        let features = Features::new(cargo_features, config, &mut warnings)?;
+        let features = Features::new(cargo_features, config, &mut warnings, source_id.is_path())?;
 
         let (replace, patch) = {
             let mut cx = Context {
-                pkgid: None,
                 deps: &mut deps,
                 source_id,
                 nested_paths: &mut nested_paths,
@@ -1606,7 +1705,6 @@ impl<P: ResolveToPath> TomlDependency<P> {
     pub(crate) fn to_dependency_split(
         &self,
         name: &str,
-        pkgid: Option<PackageId>,
         source_id: SourceId,
         nested_paths: &mut Vec<PathBuf>,
         config: &Config,
@@ -1619,7 +1717,6 @@ impl<P: ResolveToPath> TomlDependency<P> {
         self.to_dependency(
             name,
             &mut Context {
-                pkgid,
                 deps: &mut Vec::new(),
                 source_id,
                 nested_paths,
@@ -1665,14 +1762,11 @@ impl<P: ResolveToPath> DetailedTomlDependency<P> {
         kind: Option<DepKind>,
     ) -> CargoResult<Dependency> {
         if self.version.is_none() && self.path.is_none() && self.git.is_none() {
-            let msg = format!(
+            bail!(
                 "dependency ({}) specified without \
-                 providing a local path, Git repository, or \
-                 version to use. This will be considered an \
-                 error in future versions",
+                 providing a local path, Git repository, or version to use.",
                 name_in_toml
             );
-            cx.warnings.push(msg);
         }
 
         if let Some(version) = &self.version {
@@ -1695,12 +1789,11 @@ impl<P: ResolveToPath> DetailedTomlDependency<P> {
 
             for &(key, key_name) in &git_only_keys {
                 if key.is_some() {
-                    let msg = format!(
-                        "key `{}` is ignored for dependency ({}). \
-                         This will be considered an error in future versions",
-                        key_name, name_in_toml
+                    bail!(
+                        "key `{}` is ignored for dependency ({}).",
+                        key_name,
+                        name_in_toml
                     );
-                    cx.warnings.push(msg)
                 }
             }
         }
@@ -1752,13 +1845,11 @@ impl<P: ResolveToPath> DetailedTomlDependency<P> {
             ),
             (Some(git), maybe_path, _, _) => {
                 if maybe_path.is_some() {
-                    let msg = format!(
+                    bail!(
                         "dependency ({}) specification is ambiguous. \
-                         Only one of `git` or `path` is allowed. \
-                         This will be considered an error in future versions",
+                         Only one of `git` or `path` is allowed.",
                         name_in_toml
                     );
-                    cx.warnings.push(msg)
                 }
 
                 let n_details = [&self.branch, &self.tag, &self.rev]
@@ -1828,10 +1919,7 @@ impl<P: ResolveToPath> DetailedTomlDependency<P> {
         };
 
         let version = self.version.as_deref();
-        let mut dep = match cx.pkgid {
-            Some(id) => Dependency::parse(pkg_name, version, new_source_id, id, cx.config)?,
-            None => Dependency::parse_no_deprecated(pkg_name, version, new_source_id)?,
-        };
+        let mut dep = Dependency::parse(pkg_name, version, new_source_id)?;
         dep.set_features(self.features.iter().flatten())
             .set_default_features(
                 self.default_features
@@ -1883,6 +1971,8 @@ struct TomlTarget {
     crate_type2: Option<Vec<String>>,
 
     path: Option<PathValue>,
+    // Note that `filename` is used for the cargo-feature `different_binary_name`
+    filename: Option<String>,
     test: Option<bool>,
     doctest: Option<bool>,
     bench: Option<bool>,

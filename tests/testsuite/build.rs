@@ -6,12 +6,13 @@ use cargo::{
     ops::CompileOptions,
     Config,
 };
+use cargo_test_support::compare;
 use cargo_test_support::paths::{root, CargoPathExt};
 use cargo_test_support::registry::Package;
+use cargo_test_support::tools;
 use cargo_test_support::{
-    basic_bin_manifest, basic_lib_manifest, basic_manifest, cargo_exe, git, is_nightly,
-    lines_match_unordered, main_file, paths, process, project, rustc_host, sleep_ms,
-    symlink_supported, t, Execs, ProjectBuilder,
+    basic_bin_manifest, basic_lib_manifest, basic_manifest, cargo_exe, git, is_nightly, main_file,
+    paths, process, project, rustc_host, sleep_ms, symlink_supported, t, Execs, ProjectBuilder,
 };
 use cargo_util::paths::dylib_path_envvar;
 use std::env;
@@ -269,7 +270,7 @@ fn cargo_compile_with_invalid_version() {
 [ERROR] failed to parse manifest at `[..]`
 
 Caused by:
-  Expected dot for key `package.version`
+  unexpected end of input while parsing minor version number for key `package.version`
 ",
         )
         .run();
@@ -544,7 +545,7 @@ Caused by:
   failed to parse the version requirement `y` for dependency `crossbeam`
 
 Caused by:
-  the given version requirement is invalid
+  unexpected character 'y' while parsing major version number
 ",
         )
         .run();
@@ -561,6 +562,24 @@ fn cargo_compile_without_manifest() {
 }
 
 #[cargo_test]
+#[cfg(target_os = "linux")]
+fn cargo_compile_with_lowercase_cargo_toml() {
+    let p = project()
+        .no_manifest()
+        .file("cargo.toml", &basic_manifest("foo", "0.1.0"))
+        .file("src/lib.rs", &main_file(r#""i am foo""#, &[]))
+        .build();
+
+    p.cargo("build")
+        .with_status(101)
+        .with_stderr(
+            "[ERROR] could not find `Cargo.toml` in `[..]` or any parent directory, \
+        but found cargo.toml please try to rename it to Cargo.toml",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn cargo_compile_with_invalid_code() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -569,12 +588,7 @@ fn cargo_compile_with_invalid_code() {
 
     p.cargo("build")
         .with_status(101)
-        .with_stderr_contains(
-            "\
-[ERROR] could not compile `foo`
-
-To learn more, run the command again with --verbose.\n",
-        )
+        .with_stderr_contains("[ERROR] could not compile `foo` due to previous error\n")
         .run();
     assert!(p.root().join("Cargo.lock").is_file());
 }
@@ -1082,14 +1096,14 @@ fn incompatible_dependencies() {
             "\
 error: failed to select a version for `bad`.
     ... required by package `qux v0.1.0`
-    ... which is depended on by `foo v0.0.1 ([..])`
+    ... which satisfies dependency `qux = \"^0.1.0\"` of package `foo v0.0.1 ([..])`
 versions that meet the requirements `>=1.0.1` are: 1.0.2, 1.0.1
 
 all possible versions conflict with previously selected packages.
 
   previously selected package `bad v1.0.0`
-    ... which is depended on by `baz v0.1.0`
-    ... which is depended on by `foo v0.0.1 ([..])`
+    ... which satisfies dependency `bad = \"=1.0.0\"` of package `baz v0.1.0`
+    ... which satisfies dependency `baz = \"^0.1.0\"` of package `foo v0.0.1 ([..])`
 
 failed to select a version for `bad` which could resolve this conflict",
         )
@@ -1133,12 +1147,12 @@ versions that meet the requirements `>=1.0.1, <=2.0.0` are: 2.0.0, 1.0.1
 all possible versions conflict with previously selected packages.
 
   previously selected package `bad v2.0.1`
-    ... which is depended on by `baz v0.1.0`
-    ... which is depended on by `foo v0.0.1 ([..])`
+    ... which satisfies dependency `bad = \">=2.0.1\"` of package `baz v0.1.0`
+    ... which satisfies dependency `baz = \"^0.1.0\"` of package `foo v0.0.1 ([..])`
 
   previously selected package `bad v1.0.0`
-    ... which is depended on by `bar v0.1.0`
-    ... which is depended on by `foo v0.0.1 ([..])`
+    ... which satisfies dependency `bad = \"=1.0.0\"` of package `bar v0.1.0`
+    ... which satisfies dependency `bar = \"^0.1.0\"` of package `foo v0.0.1 ([..])`
 
 failed to select a version for `bad` which could resolve this conflict",
         )
@@ -1289,7 +1303,7 @@ fn crate_env_vars() {
             repository = "https://example.com/repo.git"
             authors = ["wycats@example.com"]
             license = "MIT OR Apache-2.0"
-            license_file = "license.txt"
+            license-file = "license.txt"
 
             [[bin]]
             name = "foo-bar"
@@ -1330,16 +1344,23 @@ fn crate_env_vars() {
                      assert_eq!("https://example.com", HOMEPAGE);
                      assert_eq!("https://example.com/repo.git", REPOSITORY);
                      assert_eq!("MIT OR Apache-2.0", LICENSE);
+                     assert_eq!("license.txt", LICENSE_FILE);
                      assert_eq!("This is foo", DESCRIPTION);
                     let s = format!("{}.{}.{}-{}", VERSION_MAJOR,
                                     VERSION_MINOR, VERSION_PATCH, VERSION_PRE);
                     assert_eq!(s, VERSION);
+
+                    // Verify CARGO_TARGET_TMPDIR isn't set for bins
+                    assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
                 }
             "#,
         )
         .file(
             "src/lib.rs",
             r#"
+                use std::env;
+                use std::path::PathBuf;
+
                 pub fn version() -> String {
                     format!("{}-{}-{} @ {} in {}",
                             env!("CARGO_PKG_VERSION_MAJOR"),
@@ -1348,9 +1369,63 @@ fn crate_env_vars() {
                             env!("CARGO_PKG_VERSION_PRE"),
                             env!("CARGO_MANIFEST_DIR"))
                 }
+
+                pub fn check_no_int_test_env() {
+                    env::var("CARGO_TARGET_DIR").unwrap_err();
+                }
+
+                pub fn check_tmpdir(tmp: Option<&'static str>) {
+                    let tmpdir: PathBuf = tmp.unwrap().into();
+
+                    let exe: PathBuf = env::current_exe().unwrap().into();
+                    let mut expected: PathBuf = exe.parent().unwrap()
+                        .parent().unwrap()
+                        .parent().unwrap()
+                        .into();
+                    expected.push("tmp");
+                    assert_eq!(tmpdir, expected);
+
+                    // Check that CARGO_TARGET_TMPDIR isn't set for lib code
+                    assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
+                    env::var("CARGO_TARGET_TMPDIR").unwrap_err();
+                }
+
+                #[test]
+                fn env() {
+                    // Check that CARGO_TARGET_TMPDIR isn't set for unit tests
+                    assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
+                    env::var("CARGO_TARGET_TMPDIR").unwrap_err();
+                }
             "#,
         )
-        .build();
+        .file(
+            "tests/env.rs",
+            r#"
+                #[test]
+                fn env() {
+                    foo::check_tmpdir(option_env!("CARGO_TARGET_TMPDIR"));
+                }
+            "#,
+        );
+
+    let p = if is_nightly() {
+        p.file(
+            "benches/env.rs",
+            r#"
+                #![feature(test)]
+                extern crate test;
+                use test::Bencher;
+
+                #[bench]
+                fn env(_: &mut Bencher) {
+                    foo::check_tmpdir(option_env!("CARGO_TARGET_TMPDIR"));
+                }
+            "#,
+        )
+        .build()
+    } else {
+        p.build()
+    };
 
     println!("build");
     p.cargo("build -v").run();
@@ -1362,6 +1437,11 @@ fn crate_env_vars() {
 
     println!("test");
     p.cargo("test -v").run();
+
+    if is_nightly() {
+        println!("bench");
+        p.cargo("bench -v").run();
+    }
 }
 
 #[cargo_test]
@@ -1582,7 +1662,7 @@ fn self_dependency() {
             "\
 [ERROR] cyclic package dependency: package `test v0.0.0 ([CWD])` depends on itself. Cycle:
 package `test v0.0.0 ([CWD])`
-    ... which is depended on by `test v0.0.0 ([..])`",
+    ... which satisfies path dependency `test` of package `test v0.0.0 ([..])`",
         )
         .run();
 }
@@ -2728,8 +2808,8 @@ fn cyclic_deps_rejected() {
         .with_stderr(
 "[ERROR] cyclic package dependency: package `a v0.0.1 ([CWD]/a)` depends on itself. Cycle:
 package `a v0.0.1 ([CWD]/a)`
-    ... which is depended on by `foo v0.0.1 ([CWD])`
-    ... which is depended on by `a v0.0.1 ([..])`",
+    ... which satisfies path dependency `a` of package `foo v0.0.1 ([CWD])`
+    ... which satisfies path dependency `foo` of package `a v0.0.1 ([..])`",
         ).run();
 }
 
@@ -3992,29 +4072,69 @@ fn run_proper_binary_main_rs_as_foo() {
 }
 
 #[cargo_test]
-// NOTE: we don't have `/usr/bin/env` on Windows.
-#[cfg(not(windows))]
 fn rustc_wrapper() {
     let p = project().file("src/lib.rs", "").build();
+    let wrapper = tools::echo_wrapper();
+    let running = format!(
+        "[RUNNING] `{} rustc --crate-name foo [..]",
+        wrapper.display()
+    );
     p.cargo("build -v")
-        .env("RUSTC_WRAPPER", "/usr/bin/env")
-        .with_stderr_contains("[RUNNING] `/usr/bin/env rustc --crate-name foo [..]")
+        .env("RUSTC_WRAPPER", &wrapper)
+        .with_stderr_contains(&running)
+        .run();
+    p.build_dir().rm_rf();
+    p.cargo("build -v")
+        .env("RUSTC_WORKSPACE_WRAPPER", &wrapper)
+        .with_stderr_contains(&running)
         .run();
 }
 
 #[cargo_test]
-#[cfg(not(windows))]
 fn rustc_wrapper_relative() {
-    let p = project().file("src/lib.rs", "").build();
+    Package::new("bar", "1.0.0").publish();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = "1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    let wrapper = tools::echo_wrapper();
+    let exe_name = wrapper.file_name().unwrap().to_str().unwrap();
+    let relative_path = format!("./{}", exe_name);
+    fs::hard_link(&wrapper, p.root().join(exe_name)).unwrap();
+    let running = format!("[RUNNING] `[ROOT]/foo/./{} rustc[..]", exe_name);
     p.cargo("build -v")
-        .env("RUSTC_WRAPPER", "./sccache")
-        .with_status(101)
-        .with_stderr_contains("[..]/foo/./sccache rustc[..]")
+        .env("RUSTC_WRAPPER", &relative_path)
+        .with_stderr_contains(&running)
         .run();
+    p.build_dir().rm_rf();
+    p.cargo("build -v")
+        .env("RUSTC_WORKSPACE_WRAPPER", &relative_path)
+        .with_stderr_contains(&running)
+        .run();
+    p.build_dir().rm_rf();
+    p.change_file(
+        ".cargo/config.toml",
+        &format!(
+            r#"
+                build.rustc-wrapper = "./{}"
+            "#,
+            exe_name
+        ),
+    );
+    p.cargo("build -v").with_stderr_contains(&running).run();
 }
 
 #[cargo_test]
-#[cfg(not(windows))]
 fn rustc_wrapper_from_path() {
     let p = project().file("src/lib.rs", "").build();
     p.cargo("build -v")
@@ -4022,34 +4142,7 @@ fn rustc_wrapper_from_path() {
         .with_status(101)
         .with_stderr_contains("[..]`wannabe_sccache rustc [..]")
         .run();
-}
-
-#[cargo_test]
-// NOTE: we don't have `/usr/bin/env` on Windows.
-#[cfg(not(windows))]
-fn rustc_workspace_wrapper() {
-    let p = project().file("src/lib.rs", "").build();
-    p.cargo("build -v")
-        .env("RUSTC_WORKSPACE_WRAPPER", "/usr/bin/env")
-        .with_stderr_contains("[RUNNING] `/usr/bin/env rustc --crate-name foo [..]")
-        .run();
-}
-
-#[cargo_test]
-#[cfg(not(windows))]
-fn rustc_workspace_wrapper_relative() {
-    let p = project().file("src/lib.rs", "").build();
-    p.cargo("build -v")
-        .env("RUSTC_WORKSPACE_WRAPPER", "./sccache")
-        .with_status(101)
-        .with_stderr_contains("[..]/foo/./sccache rustc[..]")
-        .run();
-}
-
-#[cargo_test]
-#[cfg(not(windows))]
-fn rustc_workspace_wrapper_from_path() {
-    let p = project().file("src/lib.rs", "").build();
+    p.build_dir().rm_rf();
     p.cargo("build -v")
         .env("RUSTC_WORKSPACE_WRAPPER", "wannabe_sccache")
         .with_status(101)
@@ -4443,6 +4536,7 @@ fn building_a_dependent_crate_witout_bin_should_fail() {
 #[cargo_test]
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn uplift_dsym_of_bin_on_mac() {
+    use cargo_test_support::paths::is_symlink;
     let p = project()
         .file("src/main.rs", "fn main() { panic!(); }")
         .file("src/bin/b.rs", "fn main() { panic!(); }")
@@ -4455,7 +4549,7 @@ fn uplift_dsym_of_bin_on_mac() {
         .run();
     assert!(p.target_debug_dir().join("foo.dSYM").is_dir());
     assert!(p.target_debug_dir().join("b.dSYM").is_dir());
-    assert!(p.target_debug_dir().join("b.dSYM").is_symlink());
+    assert!(is_symlink(&p.target_debug_dir().join("b.dSYM")));
     assert!(p.target_debug_dir().join("examples/c.dSYM").is_dir());
     assert!(!p.target_debug_dir().join("c.dSYM").exists());
     assert!(!p.target_debug_dir().join("d.dSYM").exists());
@@ -4464,6 +4558,7 @@ fn uplift_dsym_of_bin_on_mac() {
 #[cargo_test]
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn uplift_dsym_of_bin_on_mac_when_broken_link_exists() {
+    use cargo_test_support::paths::is_symlink;
     let p = project()
         .file("src/main.rs", "fn main() { panic!(); }")
         .build();
@@ -4482,7 +4577,7 @@ fn uplift_dsym_of_bin_on_mac_when_broken_link_exists() {
             .join("foo-baaaaaadbaaaaaad.dSYM"),
         &dsym,
     );
-    assert!(dsym.is_symlink());
+    assert!(is_symlink(&dsym));
     assert!(!dsym.exists());
 
     p.cargo("build").enable_mac_dsym().run();
@@ -4686,7 +4781,7 @@ fn avoid_dev_deps() {
             "\
 [UPDATING] [..]
 [ERROR] no matching package named `baz` found
-location searched: registry `https://github.com/rust-lang/crates.io-index`
+location searched: registry `crates-io`
 required by package `bar v0.1.0 ([..]/foo)`
 ",
         )
@@ -4724,6 +4819,24 @@ fn good_cargo_config_jobs() {
         )
         .build();
     p.cargo("build -v").run();
+}
+
+#[cargo_test]
+fn invalid_cargo_config_jobs() {
+    let p = project()
+        .file("src/lib.rs", "")
+        .file(
+            ".cargo/config",
+            r#"
+                [build]
+                jobs = 0
+            "#,
+        )
+        .build();
+    p.cargo("build -v")
+        .with_status(101)
+        .with_stderr_contains("error: jobs may not be 0")
+        .run();
 }
 
 #[cargo_test]
@@ -5244,7 +5357,7 @@ fn close_output() {
     };
 
     let stderr = spawn(false);
-    lines_match_unordered(
+    compare::match_unordered(
         "\
 [COMPILING] foo [..]
 hello stderr!
@@ -5253,13 +5366,14 @@ hello stderr!
 [ERROR] [..]
 ",
         &stderr,
+        None,
     )
     .unwrap();
 
     // Try again with stderr.
     p.build_dir().rm_rf();
     let stdout = spawn(true);
-    lines_match_unordered("hello stdout!\n", &stdout).unwrap();
+    assert_eq!(stdout, "hello stdout!\n");
 }
 
 #[cargo_test]

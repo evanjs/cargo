@@ -19,9 +19,12 @@ the two dashes (`--`) are passed to the benchmark binaries and thus to
 _libtest_ (rustc's built in unit-test and micro-benchmarking framework). If
 you are passing arguments to both Cargo and the binary, the ones after `--` go
 to the binary, the ones before go to Cargo. For details about libtest's
-arguments see the output of `cargo bench -- --help`.  As an example, this will
-run only the benchmark named `foo` (and skip other similarly named benchmarks
-like `foobar`):
+arguments see the output of `cargo bench -- --help` and check out the rustc
+book's chapter on how tests work at
+<https://doc.rust-lang.org/rustc/tests/index.html>.
+
+As an example, this will run only the benchmark named `foo` (and skip other
+similarly named benchmarks like `foobar`):
 
     cargo bench -- foo --exact
 
@@ -239,6 +242,12 @@ list of supported targets.</p>
 <p>Note that specifying this flag makes Cargo run in a different mode where the
 target artifacts are placed in a separate directory. See the
 <a href="../guide/build-cache.html">build cache</a> documentation for more details.</dd>
+
+
+
+<dt class="option-term" id="option-cargo-bench---ignore-rust-version"><a class="option-anchor" href="#option-cargo-bench---ignore-rust-version"></a><code>--ignore-rust-version</code></dt>
+<dd class="option-desc">Benchmark the target even if the selected Rust compiler is older than the
+required Rust version as configured in the project's <code>rust-version</code> field.</dd>
 
 
 

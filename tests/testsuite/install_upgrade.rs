@@ -595,20 +595,20 @@ fn multiple_report() {
 [UPDATING] `[..]` index
 [DOWNLOADING] crates ...
 [DOWNLOADED] one v1.0.0 (registry `[..]`)
+[DOWNLOADING] crates ...
+[DOWNLOADED] two v1.0.0 (registry `[..]`)
+[DOWNLOADING] crates ...
+[DOWNLOADED] three v1.0.0 (registry `[..]`)
 [INSTALLING] one v1.0.0
 [COMPILING] one v1.0.0
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [..]/.cargo/bin/one[EXE]
 [INSTALLED] package `one v1.0.0` (executable `one[EXE]`)
-[DOWNLOADING] crates ...
-[DOWNLOADED] two v1.0.0 (registry `[..]`)
 [INSTALLING] two v1.0.0
 [COMPILING] two v1.0.0
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [..]/.cargo/bin/two[EXE]
 [INSTALLED] package `two v1.0.0` (executable `two[EXE]`)
-[DOWNLOADING] crates ...
-[DOWNLOADED] three v1.0.0 (registry `[..]`)
 [INSTALLING] three v1.0.0
 [COMPILING] three v1.0.0
 [FINISHED] release [optimized] target(s) in [..]
@@ -803,8 +803,9 @@ fn already_installed_updates_yank_status_on_upgrade() {
     cargo_process("install foo --version=1.0.1")
         .with_status(101)
         .with_stderr_contains(
-            "error: cannot install package `foo`, it has been yanked from registry \
-            `https://github.com/rust-lang/crates.io-index`",
+            "\
+[ERROR] cannot install package `foo`, it has been yanked from registry `crates-io`
+",
         )
         .run();
 
@@ -841,13 +842,13 @@ fn partially_already_installed_does_one_update() {
 [UPDATING] `[..]` index
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v1.0.0 (registry [..])
+[DOWNLOADING] crates ...
+[DOWNLOADED] baz v1.0.0 (registry [..])
 [INSTALLING] bar v1.0.0
 [COMPILING] bar v1.0.0
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/bar[EXE]
 [INSTALLED] package `bar v1.0.0` (executable `bar[EXE]`)
-[DOWNLOADING] crates ...
-[DOWNLOADED] baz v1.0.0 (registry [..])
 [INSTALLING] baz v1.0.0
 [COMPILING] baz v1.0.0
 [FINISHED] release [optimized] target(s) in [..]

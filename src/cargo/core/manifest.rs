@@ -11,7 +11,7 @@ use serde::ser;
 use serde::Serialize;
 use url::Url;
 
-use crate::core::compiler::CrateType;
+use crate::core::compiler::{CompileKind, CrateType};
 use crate::core::resolver::ResolveBehavior;
 use crate::core::{Dependency, PackageId, PackageIdSpec, SourceId, Summary};
 use crate::core::{Edition, Feature, Features, WorkspaceConfig};
@@ -32,6 +32,8 @@ pub enum EitherManifest {
 pub struct Manifest {
     summary: Summary,
     targets: Vec<Target>,
+    default_kind: Option<CompileKind>,
+    forced_kind: Option<CompileKind>,
     links: Option<String>,
     warnings: Warnings,
     exclude: Vec<String>,
@@ -192,6 +194,8 @@ pub struct Target {
 struct TargetInner {
     kind: TargetKind,
     name: String,
+    // Note that `bin_name` is used for the cargo-feature `different_binary_name`
+    bin_name: Option<String>,
     // Note that the `src_path` here is excluded from the `Hash` implementation
     // as it's absolute currently and is otherwise a little too brittle for
     // causing rebuilds. Instead the hash for the path that we send to the
@@ -348,6 +352,7 @@ compact_debug! {
             [debug_the_fields(
                 kind
                 name
+                bin_name
                 src_path
                 required_features
                 tested
@@ -366,6 +371,8 @@ compact_debug! {
 impl Manifest {
     pub fn new(
         summary: Summary,
+        default_kind: Option<CompileKind>,
+        forced_kind: Option<CompileKind>,
         targets: Vec<Target>,
         exclude: Vec<String>,
         include: Vec<String>,
@@ -388,6 +395,8 @@ impl Manifest {
     ) -> Manifest {
         Manifest {
             summary,
+            default_kind,
+            forced_kind,
             targets,
             warnings: Warnings::new(),
             exclude,
@@ -413,6 +422,12 @@ impl Manifest {
 
     pub fn dependencies(&self) -> &[Dependency] {
         self.summary.dependencies()
+    }
+    pub fn default_kind(&self) -> Option<CompileKind> {
+        self.default_kind
+    }
+    pub fn forced_kind(&self) -> Option<CompileKind> {
+        self.forced_kind
     }
     pub fn exclude(&self) -> &[String] {
         &self.exclude
@@ -500,6 +515,15 @@ impl Manifest {
                 .with_context(|| {
                     "the `im-a-teapot` manifest key is unstable and may \
                      not work properly in England"
+                })?;
+        }
+
+        if self.default_kind.is_some() || self.forced_kind.is_some() {
+            self.unstable_features
+                .require(Feature::per_package_target())
+                .with_context(|| {
+                    "the `package.default-target` and `package.forced-target` \
+                     manifest keys are unstable and may not work properly"
                 })?;
         }
 
@@ -606,6 +630,7 @@ impl Target {
             inner: Arc::new(TargetInner {
                 kind: TargetKind::Bin,
                 name: String::new(),
+                bin_name: None,
                 src_path,
                 required_features: None,
                 doc: false,
@@ -641,6 +666,7 @@ impl Target {
 
     pub fn bin_target(
         name: &str,
+        bin_name: Option<String>,
         src_path: PathBuf,
         required_features: Option<Vec<String>>,
         edition: Edition,
@@ -649,6 +675,7 @@ impl Target {
         target
             .set_kind(TargetKind::Bin)
             .set_name(name)
+            .set_binary_name(bin_name)
             .set_required_features(required_features)
             .set_doc(true);
         target
@@ -890,11 +917,17 @@ impl Target {
         Arc::make_mut(&mut self.inner).name = name.to_string();
         self
     }
+    pub fn set_binary_name(&mut self, bin_name: Option<String>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).bin_name = bin_name;
+        self
+    }
     pub fn set_required_features(&mut self, required_features: Option<Vec<String>>) -> &mut Target {
         Arc::make_mut(&mut self.inner).required_features = required_features;
         self
     }
-
+    pub fn binary_filename(&self) -> Option<String> {
+        self.inner.bin_name.clone()
+    }
     pub fn description_named(&self) -> String {
         match self.kind() {
             TargetKind::Lib(..) => "lib".to_string(),
@@ -904,7 +937,7 @@ impl Target {
             TargetKind::ExampleLib(..) | TargetKind::ExampleBin => {
                 format!("example \"{}\"", self.name())
             }
-            TargetKind::CustomBuild => "custom-build".to_string(),
+            TargetKind::CustomBuild => "build script".to_string(),
         }
     }
 }

@@ -12,9 +12,8 @@ and verify its behavior, located in the [`testsuite`] directory.  The
 There are two styles of tests that can roughly be categorized as
 - functional tests
   - The fixture is programmatically defined
-  - The assertions are regular string comparisons
+  - The assertions may be in-source snapshots, hard-coded strings, or programmatically generated
   - Easier to share in an issue as a code block is completely self-contained
-  - More resilient to insignificant changes though ui tests are easy to update when a change does occur
 - ui tests
   - The fixture is file-based
   - The assertions use file-backed snapshots that can be updated with an env variable
@@ -30,6 +29,10 @@ stdout and stderr output against the expected output.
 
 Generally, a functional test will be placed in `tests/testsuite/<command>.rs` and will look roughly like:
 ```rust,ignore
+use cargo_test_support::prelude::*;
+use cargo_test_support::str;
+use cargo_test_support::project;
+
 #[cargo_test]
 fn <description>() {
     let p = project()
@@ -37,20 +40,19 @@ fn <description>() {
         .build();
 
     p.cargo("run --bin foo")
-        .with_stderr(
-            "\
-    [COMPILING] foo [..]
-    [FINISHED] [..]
-    [RUNNING] `target/debug/foo`
-    ",
-        )
-        .with_stdout("hi!")
+        .with_stderr_data(str![[r#"
+[COMPILING] foo [..]
+[FINISHED] [..]
+[RUNNING] `target/debug/foo`
+"#]])
+        .with_stdout_data(str![["hi!"]])
         .run();
-    }
 }
 ```
 
-The [`#[cargo_test]` attribute](#cargo_test-attribute) is used in place of `#[test]` to inject some setup code.
+The [`#[cargo_test]` attribute][cargo_test attribute] is used in place of
+`#[test]` to inject some setup code and declare requirements for running the
+test.
 
 [`ProjectBuilder`] via `project()`:
 - Each project is in a separate directory in the sandbox
@@ -61,50 +63,6 @@ The [`#[cargo_test]` attribute](#cargo_test-attribute) is used in place of `#[te
 - This executes the command and evaluates different assertions
   - See [`support::compare`] for an explanation of the string pattern matching.
     Patterns are used to make it easier to match against the expected output.
-
-#### `#[cargo_test]` attribute
-
-The `#[cargo_test]` attribute injects code which does some setup before starting the test.
-It will create a filesystem "sandbox" under the "cargo integration test" directory for each test, such as `/path/to/cargo/target/tmp/cit/t123/`.
-The sandbox will contain a `home` directory that will be used instead of your normal home directory.
-
-The `#[cargo_test]` attribute takes several options that will affect how the test is generated.
-They are listed in parentheses separated with commas, such as:
-
-```rust,ignore
-#[cargo_test(nightly, reason = "-Zfoo is unstable")]
-```
-
-The options it supports are:
-
-* `nightly` --- This will cause the test to be ignored if not running on the nightly toolchain.
-  This is useful for tests that use unstable options in `rustc` or `rustdoc`.
-  These tests are run in Cargo's CI, but are disabled in rust-lang/rust's CI due to the difficulty of updating both repos simultaneously.
-  A `reason` field is required to explain why it is nightly-only.
-* `build_std_real` --- This is a "real" `-Zbuild-std` test (in the `build_std` integration test).
-  This only runs on nightly, and only if the environment variable `CARGO_RUN_BUILD_STD_TESTS` is set (these tests on run on Linux).
-* `build_std_mock` --- This is a "mock" `-Zbuild-std` test (which uses a mock standard library).
-  This only runs on nightly, and is disabled for windows-gnu.
-* `requires_` --- This indicates a command that is required to be installed to be run.
-  For example, `requires_rustfmt` means the test will only run if the executable `rustfmt` is installed.
-  These tests are *always* run on CI.
-  This is mainly used to avoid requiring contributors from having every dependency installed.
-* `>=1.64` --- This indicates that the test will only run with the given version of `rustc` or newer.
-  This can be used when a new `rustc` feature has been stabilized that the test depends on.
-  If this is specified, a `reason` is required to explain why it is being checked.
-* `public_network_test` --- This tests contacts the public internet.
-  These tests are disabled unless the `CARGO_PUBLIC_NETWORK_TESTS` environment variable is set.
-  Use of this should be *extremely rare*, please avoid using it if possible.
-  The hosts it contacts should have a relatively high confidence that they are reliable and stable (such as github.com), especially in CI.
-  The tests should be carefully considered for developer security and privacy as well.
-* `container_test` --- This indicates that it is a test that uses Docker.
-  These tests are disabled unless the `CARGO_CONTAINER_TESTS` environment variable is set.
-  This requires that you have Docker installed.
-  The SSH tests also assume that you have OpenSSH installed.
-  These should work on Linux, macOS, and Windows where possible.
-  Unfortunately these tests are not run in CI for macOS or Windows (no Docker on macOS, and Windows does not support Linux images).
-  See [`crates/cargo-test-support/src/containers.rs`](https://github.com/rust-lang/cargo/blob/master/crates/cargo-test-support/src/containers.rs) for more on writing these tests.
-* `ignore_windows="reason"` --- Indicates that the test should be ignored on windows for the given reason.
 
 #### Testing Nightly Features
 
@@ -154,6 +112,48 @@ If you need to test with registry dependencies, see
 If you need to test git dependencies, see [`support::git`] to create a git
 dependency.
 
+#### Cross compilation
+
+There are some utilities to help support tests that need to work against a
+target other than the host. See [Running cross
+tests](running.md#running-cross-tests) for more an introduction on cross
+compilation tests.
+
+Tests that need to do cross-compilation should include this at the top of the
+test to disable it in scenarios where cross compilation isn't available:
+
+```rust,ignore
+if cargo_test_support::cross_compile::disabled() {
+    return;
+}
+```
+
+The name of the target can be fetched with the [`cross_compile::alternate()`]
+function. The name of the host target can be fetched with
+[`cargo_test_support::rustc_host()`].
+
+The cross-tests need to distinguish between targets which can *build* versus
+those which can actually *run* the resulting executable. Unfortunately, macOS is
+currently unable to run an alternate target (Apple removed 32-bit support a
+long time ago). For building, `x86_64-apple-darwin` will target
+`x86_64-apple-ios` as its alternate. However, the iOS target can only execute
+binaries if the iOS simulator is installed and configured. The simulator is
+not available in CI, so all tests that need to run cross-compiled binaries are
+disabled on CI. If you are running on macOS locally, and have the simulator
+installed, then it should be able to run them.
+
+If the test needs to run the cross-compiled binary, then it should have
+something like this to exit the test before doing so:
+
+```rust,ignore
+if cargo_test_support::cross_compile::can_run_on_host() {
+    return;
+}
+```
+
+[`cross_compile::alternate()`]: https://github.com/rust-lang/cargo/blob/d58902e22e148426193cf3b8c4449fd3c05c0afd/crates/cargo-test-support/src/cross_compile.rs#L208-L225
+[`cargo_test_support::rustc_host()`]: https://github.com/rust-lang/cargo/blob/d58902e22e148426193cf3b8c4449fd3c05c0afd/crates/cargo-test-support/src/lib.rs#L1137-L1140
+
 ### UI Tests
 
 UI Tests are a bit more spread out and generally look like:
@@ -165,14 +165,15 @@ mod <case>;
 
 `tests/testsuite/<command>/<case>/mod.rs`:
 ```rust,ignore
-use cargo_test_support::prelude::*;
 use cargo_test_support::compare::assert_ui;
+use cargo_test_support::current_dir;
+use cargo_test_support::file;
+use cargo_test_support::prelude::*;
 use cargo_test_support::Project;
-use cargo_test_support::curr_dir;
 
 #[cargo_test]
-fn <name>() {
-    let project = Project::from_template(curr_dir!().join("in"));
+fn case() {
+    let project = Project::from_template(current_dir!().join("in"));
     let project_root = project.root();
     let cwd = &project_root;
 
@@ -182,10 +183,10 @@ fn <name>() {
         .current_dir(cwd)
         .assert()
         .success()
-        .stdout_matches_path(curr_dir!().join("stdout.log"))
-        .stderr_matches_path(curr_dir!().join("stderr.log"));
+        .stdout_matches(file!("stdout.log"))
+        .stderr_matches(file!("stderr.log"));
 
-    assert_ui().subset_matches(curr_dir!().join("out"), &project_root);
+    assert_ui().subset_matches(current_dir!().join("out"), &project_root);
 }
 ```
 
@@ -285,6 +286,7 @@ environment. The general process is:
         2. Set a breakpoint, for example: `b generate_root_units`
         3. Run with arguments: `r check`
 
+[cargo_test attribute]: https://doc.rust-lang.org/nightly/nightly-rustc/cargo_test_macro/attr.cargo_test.html
 [`testsuite`]: https://github.com/rust-lang/cargo/tree/master/tests/testsuite/
 [`ProjectBuilder`]: https://github.com/rust-lang/cargo/blob/d847468768446168b596f721844193afaaf9d3f2/crates/cargo-test-support/src/lib.rs#L196-L202
 [`Execs`]: https://github.com/rust-lang/cargo/blob/d847468768446168b596f721844193afaaf9d3f2/crates/cargo-test-support/src/lib.rs#L531-L550

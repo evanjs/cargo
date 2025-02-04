@@ -1,4 +1,4 @@
-//! # Feature resolver
+//! Resolves conditional compilation for [`features` section] in the manifest.
 //!
 //! This is a [new feature resolver] that runs independently of the main
 //! dependency resolver. It has several options which can enable new feature
@@ -34,6 +34,7 @@
 //!
 //! There are probably other assumptions that I am forgetting.
 //!
+//! [`features` section]: https://doc.rust-lang.org/nightly/cargo/reference/features.html
 //! [new feature resolver]: https://doc.rust-lang.org/nightly/cargo/reference/resolver.html#feature-resolver-version-2
 //! [`resolve_ws_with_opts`]: crate::ops::resolve_ws_with_opts
 
@@ -42,9 +43,10 @@ use crate::core::dependency::{ArtifactTarget, DepKind, Dependency};
 use crate::core::resolver::types::FeaturesSet;
 use crate::core::resolver::{Resolve, ResolveBehavior};
 use crate::core::{FeatureValue, PackageId, PackageIdSpec, PackageSet, Workspace};
-use crate::util::interning::InternedString;
+use crate::util::interning::{InternedString, INTERNED_DEFAULT};
 use crate::util::CargoResult;
-use anyhow::bail;
+use anyhow::{bail, Context};
+use itertools::Itertools;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -170,7 +172,7 @@ impl FeatureOpts {
         force_all_targets: ForceAllTargets,
     ) -> CargoResult<FeatureOpts> {
         let mut opts = FeatureOpts::default();
-        let unstable_flags = ws.config().cli_unstable();
+        let unstable_flags = ws.gctx().cli_unstable();
         let mut enable = |feat_opts: &Vec<String>| {
             for opt in feat_opts {
                 match opt.as_ref() {
@@ -194,7 +196,7 @@ impl FeatureOpts {
         }
         match ws.resolve_behavior() {
             ResolveBehavior::V1 => {}
-            ResolveBehavior::V2 => {
+            ResolveBehavior::V2 | ResolveBehavior::V3 => {
                 enable(&vec!["all".to_string()]).unwrap();
             }
         }
@@ -208,11 +210,11 @@ impl FeatureOpts {
         Ok(opts)
     }
 
-    /// Creates a new FeatureOpts for the given behavior.
+    /// Creates a new `FeatureOpts` for the given behavior.
     pub fn new_behavior(behavior: ResolveBehavior, has_dev_units: HasDevUnits) -> FeatureOpts {
         match behavior {
             ResolveBehavior::V1 => FeatureOpts::default(),
-            ResolveBehavior::V2 => FeatureOpts {
+            ResolveBehavior::V2 | ResolveBehavior::V3 => FeatureOpts {
                 decouple_host_deps: true,
                 decouple_dev_deps: has_dev_units == HasDevUnits::No,
                 ignore_inactive_targets: true,
@@ -257,7 +259,7 @@ pub struct CliFeatures {
 }
 
 impl CliFeatures {
-    /// Creates a new CliFeatures from the given command-line flags.
+    /// Creates a new `CliFeatures` from the given command-line flags.
     pub fn from_command_line(
         features: &[String],
         all_features: bool,
@@ -289,7 +291,7 @@ impl CliFeatures {
         })
     }
 
-    /// Creates a new CliFeatures with the given `all_features` setting.
+    /// Creates a new `CliFeatures` with the given `all_features` setting.
     pub fn new_all(all_features: bool) -> CliFeatures {
         CliFeatures {
             features: Rc::new(BTreeSet::new()),
@@ -317,8 +319,30 @@ impl ResolvedFeatures {
         pkg_id: PackageId,
         features_for: FeaturesFor,
     ) -> Vec<InternedString> {
-        self.activated_features_int(pkg_id, features_for)
-            .expect("activated_features for invalid package")
+        if let Some(res) = self.activated_features_unverified(pkg_id, features_for) {
+            res
+        } else {
+            panic!(
+                "did not find features for ({pkg_id:?}, {features_for:?}) within activated_features:\n{:#?}",
+                self.activated_features.keys()
+            )
+        }
+    }
+
+    /// Variant of `activated_features` that returns `None` if this is
+    /// not a valid `pkg_id/is_build` combination. Used in places which do
+    /// not know which packages are activated (like `cargo clean`).
+    pub fn activated_features_unverified(
+        &self,
+        pkg_id: PackageId,
+        features_for: FeaturesFor,
+    ) -> Option<Vec<InternedString>> {
+        let fk = features_for.apply_opts(&self.opts);
+        if let Some(fs) = self.activated_features.get(&(pkg_id, fk)) {
+            Some(fs.iter().cloned().collect())
+        } else {
+            None
+        }
     }
 
     /// Returns if the given dependency should be included.
@@ -336,30 +360,6 @@ impl ResolvedFeatures {
             .get(&(pkg_id, key))
             .map(|deps| deps.contains(&dep_name))
             .unwrap_or(false)
-    }
-
-    /// Variant of `activated_features` that returns `None` if this is
-    /// not a valid pkg_id/is_build combination. Used in places which do
-    /// not know which packages are activated (like `cargo clean`).
-    pub fn activated_features_unverified(
-        &self,
-        pkg_id: PackageId,
-        features_for: FeaturesFor,
-    ) -> Option<Vec<InternedString>> {
-        self.activated_features_int(pkg_id, features_for).ok()
-    }
-
-    fn activated_features_int(
-        &self,
-        pkg_id: PackageId,
-        features_for: FeaturesFor,
-    ) -> CargoResult<Vec<InternedString>> {
-        let fk = features_for.apply_opts(&self.opts);
-        if let Some(fs) = self.activated_features.get(&(pkg_id, fk)) {
-            Ok(fs.iter().cloned().collect())
-        } else {
-            bail!("features did not find {:?} {:?}", pkg_id, fk)
-        }
     }
 
     /// Compares the result against the original resolver behavior.
@@ -405,13 +405,13 @@ pub type DiffMap = BTreeMap<PackageFeaturesKey, BTreeSet<InternedString>>;
 ///
 /// [`resolve`]: Self::resolve
 /// [module-level documentation]: crate::core::resolver::features
-pub struct FeatureResolver<'a, 'cfg> {
-    ws: &'a Workspace<'cfg>,
-    target_data: &'a RustcTargetData<'cfg>,
+pub struct FeatureResolver<'a, 'gctx> {
+    ws: &'a Workspace<'gctx>,
+    target_data: &'a mut RustcTargetData<'gctx>,
     /// The platforms to build for, requested by the user.
     requested_targets: &'a [CompileKind],
     resolve: &'a Resolve,
-    package_set: &'a PackageSet<'cfg>,
+    package_set: &'a PackageSet<'gctx>,
     /// Options that change how the feature resolver operates.
     opts: FeatureOpts,
     /// Map of features activated for each package.
@@ -424,10 +424,12 @@ pub struct FeatureResolver<'a, 'cfg> {
     /// If this is `true`, then a non-default `feature_key` needs to be tracked while
     /// traversing the graph.
     ///
-    /// This is only here to avoid calling `is_proc_macro` when all feature
-    /// options are disabled (because `is_proc_macro` can trigger downloads).
-    /// This has to be separate from `FeatureOpts.decouple_host_deps` because
+    /// This is only here to avoid calling [`has_any_proc_macro`] when all feature
+    /// options are disabled (because [`has_any_proc_macro`] can trigger downloads).
+    /// This has to be separate from [`FeatureOpts::decouple_host_deps`] because
     /// `for_host` tracking is also needed for `itarget` to work properly.
+    ///
+    /// [`has_any_proc_macro`]: FeatureResolver::has_any_proc_macro
     track_for_host: bool,
     /// `dep_name?/feat_name` features that will be activated if `dep_name` is
     /// ever activated.
@@ -439,21 +441,20 @@ pub struct FeatureResolver<'a, 'cfg> {
         HashMap<(PackageId, FeaturesFor, InternedString), HashSet<InternedString>>,
 }
 
-impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
+impl<'a, 'gctx> FeatureResolver<'a, 'gctx> {
     /// Runs the resolution algorithm and returns a new [`ResolvedFeatures`]
     /// with the result.
+    #[tracing::instrument(skip_all)]
     pub fn resolve(
-        ws: &Workspace<'cfg>,
-        target_data: &RustcTargetData<'cfg>,
+        ws: &Workspace<'gctx>,
+        target_data: &'a mut RustcTargetData<'gctx>,
         resolve: &Resolve,
-        package_set: &'a PackageSet<'cfg>,
+        package_set: &'a PackageSet<'gctx>,
         cli_features: &CliFeatures,
         specs: &[PackageIdSpec],
         requested_targets: &[CompileKind],
         opts: FeatureOpts,
     ) -> CargoResult<ResolvedFeatures> {
-        use crate::util::profile;
-        let _p = profile::start("resolve features");
         let track_for_host = opts.decouple_host_deps || opts.ignore_inactive_targets;
         let mut r = FeatureResolver {
             ws,
@@ -469,7 +470,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
             deferred_weak_dependencies: HashMap::new(),
         };
         r.do_resolve(specs, cli_features)?;
-        log::debug!("features={:#?}", r.activated_features);
+        tracing::debug!("features={:#?}", r.activated_features);
         if r.opts.compare {
             r.compare();
         }
@@ -489,7 +490,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         let member_features = self.ws.members_with_features(specs, cli_features)?;
         for (member, cli_features) in &member_features {
             let fvs = self.fvs_from_requested(member.package_id(), cli_features);
-            let fk = if self.track_for_host && self.is_proc_macro(member.package_id()) {
+            let fk = if self.track_for_host && self.has_any_proc_macro(member.package_id()) {
                 // Also activate for normal dependencies. This is needed if the
                 // proc-macro includes other targets (like binaries or tests),
                 // or running in `cargo test`. Note that in a workspace, if
@@ -517,7 +518,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         fk: FeaturesFor,
         fvs: &[FeatureValue],
     ) -> CargoResult<()> {
-        log::trace!("activate_pkg {} {}", pkg_id.name(), fk);
+        tracing::trace!("activate_pkg {} {}", pkg_id.name(), fk);
         // Add an empty entry to ensure everything is covered. This is intended for
         // finding bugs where the resolver missed something it should have visited.
         // Remove this in the future if `activated_features` uses an empty default.
@@ -543,7 +544,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
             // features that enable other features.
             return Ok(());
         }
-        for (dep_pkg_id, deps) in self.deps(pkg_id, fk) {
+        for (dep_pkg_id, deps) in self.deps(pkg_id, fk)? {
             for (dep, dep_fk) in deps {
                 if dep.is_optional() {
                     // Optional dependencies are enabled in `activate_fv` when
@@ -558,14 +559,14 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         Ok(())
     }
 
-    /// Activate a single FeatureValue for a package.
+    /// Activate a single `FeatureValue` for a package.
     fn activate_fv(
         &mut self,
         pkg_id: PackageId,
         fk: FeaturesFor,
         fv: &FeatureValue,
     ) -> CargoResult<()> {
-        log::trace!("activate_fv {} {} {}", pkg_id.name(), fk, fv);
+        tracing::trace!("activate_fv {} {} {}", pkg_id.name(), fk, fv);
         match fv {
             FeatureValue::Feature(f) => {
                 self.activate_rec(pkg_id, fk, *f)?;
@@ -592,7 +593,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         fk: FeaturesFor,
         feature_to_enable: InternedString,
     ) -> CargoResult<()> {
-        log::trace!(
+        tracing::trace!(
             "activate_rec {} {} feat={}",
             pkg_id.name(),
             fk,
@@ -608,19 +609,16 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         }
         let summary = self.resolve.summary(pkg_id);
         let feature_map = summary.features();
-        let fvs = match feature_map.get(&feature_to_enable) {
-            Some(fvs) => fvs,
-            None => {
-                // TODO: this should only happen for optional dependencies.
-                // Other cases should be validated by Summary's `build_feature_map`.
-                // Figure out some way to validate this assumption.
-                log::debug!(
-                    "pkg {:?} does not define feature {}",
-                    pkg_id,
-                    feature_to_enable
-                );
-                return Ok(());
-            }
+        let Some(fvs) = feature_map.get(&feature_to_enable) else {
+            // TODO: this should only happen for optional dependencies.
+            // Other cases should be validated by Summary's `build_feature_map`.
+            // Figure out some way to validate this assumption.
+            tracing::debug!(
+                "pkg {:?} does not define feature {}",
+                pkg_id,
+                feature_to_enable
+            );
+            return Ok(());
         };
         for fv in fvs {
             self.activate_fv(pkg_id, fk, fv)?;
@@ -646,14 +644,14 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
             .deferred_weak_dependencies
             .remove(&(pkg_id, fk, dep_name));
         // Activate the optional dep.
-        for (dep_pkg_id, deps) in self.deps(pkg_id, fk) {
+        for (dep_pkg_id, deps) in self.deps(pkg_id, fk)? {
             for (dep, dep_fk) in deps {
                 if dep.name_in_toml() != dep_name {
                     continue;
                 }
                 if let Some(to_enable) = &to_enable {
                     for dep_feature in to_enable {
-                        log::trace!(
+                        tracing::trace!(
                             "activate deferred {} {} -> {}/{}",
                             pkg_id.name(),
                             fk,
@@ -680,7 +678,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         dep_feature: InternedString,
         weak: bool,
     ) -> CargoResult<()> {
-        for (dep_pkg_id, deps) in self.deps(pkg_id, fk) {
+        for (dep_pkg_id, deps) in self.deps(pkg_id, fk)? {
             for (dep, dep_fk) in deps {
                 if dep.name_in_toml() != dep_name {
                     continue;
@@ -696,7 +694,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                     {
                         // This is weak, but not yet activated. Defer in case
                         // something comes along later and enables it.
-                        log::trace!(
+                        tracing::trace!(
                             "deferring feature {} {} -> {}/{}",
                             pkg_id.name(),
                             fk,
@@ -717,7 +715,15 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                         // The old behavior before weak dependencies were
                         // added is to also enables a feature of the same
                         // name.
-                        self.activate_rec(pkg_id, fk, dep_name)?;
+                        //
+                        // Don't enable if the implicit optional dependency
+                        // feature wasn't created due to `dep:` hiding.
+                        // See rust-lang/cargo#10788 and rust-lang/cargo#12130
+                        let summary = self.resolve.summary(pkg_id);
+                        let feature_map = summary.features();
+                        if feature_map.contains_key(&dep_name) {
+                            self.activate_rec(pkg_id, fk, dep_name)?;
+                        }
                     }
                 }
                 // Activate the feature on the dependency.
@@ -728,7 +734,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         Ok(())
     }
 
-    /// Returns Vec of FeatureValues from a Dependency definition.
+    /// Returns Vec of `FeatureValues` from a Dependency definition.
     fn fvs_from_dependency(&self, dep_id: PackageId, dep: &Dependency) -> Vec<FeatureValue> {
         let summary = self.resolve.summary(dep_id);
         let feature_map = summary.features();
@@ -737,14 +743,13 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
             .iter()
             .map(|f| FeatureValue::new(*f))
             .collect();
-        let default = InternedString::new("default");
-        if dep.uses_default_features() && feature_map.contains_key(&default) {
-            result.push(FeatureValue::Feature(default));
+        if dep.uses_default_features() && feature_map.contains_key(&INTERNED_DEFAULT) {
+            result.push(FeatureValue::Feature(INTERNED_DEFAULT));
         }
         result
     }
 
-    /// Returns Vec of FeatureValues from a set of command-line features.
+    /// Returns Vec of `FeatureValues` from a set of command-line features.
     fn fvs_from_requested(
         &self,
         pkg_id: PackageId,
@@ -754,9 +759,8 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         let feature_map = summary.features();
 
         let mut result: Vec<FeatureValue> = cli_features.features.iter().cloned().collect();
-        let default = InternedString::new("default");
-        if cli_features.uses_default_features && feature_map.contains_key(&default) {
-            result.push(FeatureValue::Feature(default));
+        if cli_features.uses_default_features && feature_map.contains_key(&INTERNED_DEFAULT) {
+            result.push(FeatureValue::Feature(INTERNED_DEFAULT));
         }
 
         if cli_features.all_features {
@@ -768,12 +772,17 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
 
     /// Returns the dependencies for a package, filtering out inactive targets.
     fn deps(
-        &self,
+        &mut self,
         pkg_id: PackageId,
         fk: FeaturesFor,
-    ) -> Vec<(PackageId, Vec<(&'a Dependency, FeaturesFor)>)> {
+    ) -> CargoResult<Vec<(PackageId, Vec<(&'a Dependency, FeaturesFor)>)>> {
         // Helper for determining if a platform is activated.
-        let platform_activated = |dep: &Dependency| -> bool {
+        fn platform_activated(
+            dep: &Dependency,
+            fk: FeaturesFor,
+            target_data: &RustcTargetData<'_>,
+            requested_targets: &[CompileKind],
+        ) -> bool {
             // We always count platforms as activated if the target stems from an artifact
             // dependency's target specification. This triggers in conjunction with
             // `[target.'cfg(…)'.dependencies]` manifest sections.
@@ -782,18 +791,17 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                     // We always care about build-dependencies, and they are always
                     // Host. If we are computing dependencies "for a build script",
                     // even normal dependencies are host-only.
-                    self.target_data
-                        .dep_platform_activated(dep, CompileKind::Host)
+                    target_data.dep_platform_activated(dep, CompileKind::Host)
                 }
-                (_, FeaturesFor::NormalOrDev) => self
-                    .requested_targets
+                (_, FeaturesFor::NormalOrDev) => requested_targets
                     .iter()
-                    .any(|kind| self.target_data.dep_platform_activated(dep, *kind)),
-                (_, FeaturesFor::ArtifactDep(target)) => self
-                    .target_data
-                    .dep_platform_activated(dep, CompileKind::Target(target)),
+                    .any(|kind| target_data.dep_platform_activated(dep, *kind)),
+                (_, FeaturesFor::ArtifactDep(target)) => {
+                    target_data.dep_platform_activated(dep, CompileKind::Target(target))
+                }
             }
-        };
+        }
+
         self.resolve
             .deps(pkg_id)
             .map(|(dep_id, deps)| {
@@ -802,7 +810,12 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                     .filter(|dep| {
                         if dep.platform().is_some()
                             && self.opts.ignore_inactive_targets
-                            && !platform_activated(dep)
+                            && !platform_activated(
+                                dep,
+                                fk,
+                                self.target_data,
+                                self.requested_targets,
+                            )
                         {
                             return false;
                         }
@@ -811,7 +824,9 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                         }
                         true
                     })
-                    .flat_map(|dep| {
+                    .collect_vec() // collect because the next closure mutably borrows `self.target_data`
+                    .into_iter()
+                    .map(|dep| {
                         // Each `dep`endency can be built for multiple targets. For one, it
                         // may be a library target which is built as initially configured
                         // by `fk`. If it appears as build dependency, it must be built
@@ -835,7 +850,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                         // for various targets which are either specified in the manifest
                         // or on the cargo command-line.
                         let lib_fk = if fk == FeaturesFor::default() {
-                            (self.track_for_host && (dep.is_build() || self.is_proc_macro(dep_id)))
+                            (self.track_for_host && (dep.is_build() || self.has_proc_macro_lib(dep_id)))
                                 .then(|| FeaturesFor::HostDep)
                                 .unwrap_or_default()
                         } else {
@@ -843,28 +858,52 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                         };
 
                         // `artifact_target_keys` are produced to fulfil the needs of artifacts that have a target specification.
-                        let artifact_target_keys = dep.artifact().map(|artifact| {
-                            (
-                                artifact.is_lib(),
-                                artifact.target().map(|target| match target {
-                                    ArtifactTarget::Force(target) => {
-                                        vec![FeaturesFor::ArtifactDep(target)]
-                                    }
-                                    ArtifactTarget::BuildDependencyAssumeTarget => self
-                                        .requested_targets
-                                        .iter()
-                                        .map(|kind| match kind {
-                                            CompileKind::Host => {
-                                                let host_triple = self.target_data.rustc.host;
-                                                CompileTarget::new(&host_triple).unwrap()
-                                            }
-                                            CompileKind::Target(target) => *target,
+                        let artifact_target_keys = dep
+                            .artifact()
+                            .map(|artifact| {
+                                let host_triple = self.target_data.rustc.host;
+                                // not all targets may be queried before resolution since artifact dependencies
+                                // and per-pkg-targets are not immediately known.
+                                let mut activate_target = |target| {
+                                    let name = dep.name_in_toml();
+                                    self.target_data
+                                        .merge_compile_kind(CompileKind::Target(target))
+                                        .with_context(|| format!("failed to determine target information for target `{target}`.\n  \
+                                        Artifact dependency `{name}` in package `{pkg_id}` requires building for `{target}`", target = target.rustc_target()))
+                                };
+                                CargoResult::Ok((
+                                    artifact.is_lib(),
+                                    artifact
+                                        .target()
+                                        .map(|target| {
+                                            CargoResult::Ok(match target {
+                                                ArtifactTarget::Force(target) => {
+                                                    activate_target(target)?;
+                                                    vec![FeaturesFor::ArtifactDep(target)]
+                                                }
+                                                // FIXME: this needs to interact with the `default-target` and `forced-target` values
+                                                // of the dependency
+                                                ArtifactTarget::BuildDependencyAssumeTarget => self
+                                                    .requested_targets
+                                                    .iter()
+                                                    .map(|kind| match kind {
+                                                        CompileKind::Host => {
+                                                            CompileTarget::new(&host_triple)
+                                                                .unwrap()
+                                                        }
+                                                        CompileKind::Target(target) => *target,
+                                                    })
+                                                    .map(|target| {
+                                                        activate_target(target)?;
+                                                        Ok(FeaturesFor::ArtifactDep(target))
+                                                    })
+                                                    .collect::<CargoResult<_>>()?,
+                                            })
                                         })
-                                        .map(FeaturesFor::ArtifactDep)
-                                        .collect(),
-                                }),
-                            )
-                        });
+                                        .transpose()?,
+                                ))
+                            })
+                            .transpose()?;
 
                         let dep_fks = match artifact_target_keys {
                             // The artifact is also a library and does specify custom
@@ -884,12 +923,13 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                             // Use the standard feature key without any alteration.
                             Some((_, None)) | None => vec![lib_fk],
                         };
-                        dep_fks.into_iter().map(move |dep_fk| (dep, dep_fk))
+                        Ok(dep_fks.into_iter().map(move |dep_fk| (dep, dep_fk)))
                     })
-                    .collect::<Vec<_>>();
-                (dep_id, deps)
+                    .flatten_ok()
+                    .collect::<CargoResult<Vec<_>>>()?;
+                Ok((dep_id, deps))
             })
-            .filter(|(_id, deps)| !deps.is_empty())
+            .filter(|res| res.as_ref().map_or(true, |(_id, deps)| !deps.is_empty()))
             .collect()
     }
 
@@ -900,7 +940,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
             let r_features = self.resolve.features(*pkg_id);
             if !r_features.iter().eq(features.iter()) {
                 crate::drop_eprintln!(
-                    self.ws.config(),
+                    self.ws.gctx(),
                     "{}/{:?} features mismatch\nresolve: {:?}\nnew: {:?}\n",
                     pkg_id,
                     dep_kind,
@@ -915,10 +955,24 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         }
     }
 
-    fn is_proc_macro(&self, package_id: PackageId) -> bool {
+    /// Whether the given package has any proc macro target, including proc-macro examples.
+    fn has_any_proc_macro(&self, package_id: PackageId) -> bool {
         self.package_set
             .get_one(package_id)
             .expect("packages downloaded")
             .proc_macro()
+    }
+
+    /// Whether the given package is a proc macro lib target.
+    ///
+    /// This is useful for checking if a dependency is a proc macro,
+    /// as it is not possible to depend on a non-lib target as a proc-macro.
+    fn has_proc_macro_lib(&self, package_id: PackageId) -> bool {
+        self.package_set
+            .get_one(package_id)
+            .expect("packages downloaded")
+            .library()
+            .map(|lib| lib.proc_macro())
+            .unwrap_or_default()
     }
 }

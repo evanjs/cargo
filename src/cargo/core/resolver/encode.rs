@@ -117,13 +117,13 @@ use crate::util::errors::CargoResult;
 use crate::util::interning::InternedString;
 use crate::util::{internal, Graph};
 use anyhow::{bail, Context as _};
-use log::debug;
 use serde::de;
 use serde::ser;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
+use tracing::debug;
 
 /// The `Cargo.lock` structure.
 #[derive(Serialize, Deserialize, Debug)]
@@ -154,10 +154,18 @@ impl EncodableResolve {
     /// primary uses is to be used with `resolve_with_previous` to guide the
     /// resolver to create a complete Resolve.
     pub fn into_resolve(self, original: &str, ws: &Workspace<'_>) -> CargoResult<Resolve> {
-        let path_deps = build_path_deps(ws)?;
+        let path_deps: HashMap<String, HashMap<semver::Version, SourceId>> = build_path_deps(ws)?;
         let mut checksums = HashMap::new();
 
         let mut version = match self.version {
+            Some(n @ 5) if ws.gctx().nightly_features_allowed => {
+                if ws.gctx().cli_unstable().next_lockfile_bump {
+                    ResolveVersion::V5
+                } else {
+                    anyhow::bail!("lock file version `{n}` requires `-Znext-lockfile-bump`");
+                }
+            }
+            Some(4) => ResolveVersion::V4,
             Some(3) => ResolveVersion::V3,
             Some(n) => bail!(
                 "lock file version `{}` was found, but this version of Cargo \
@@ -188,20 +196,24 @@ impl EncodableResolve {
                 let enc_id = EncodablePackageId {
                     name: pkg.name.clone(),
                     version: Some(pkg.version.clone()),
-                    source: pkg.source,
+                    source: pkg.source.clone(),
                 };
 
                 if !all_pkgs.insert(enc_id.clone()) {
                     anyhow::bail!("package `{}` is specified twice in the lockfile", pkg.name);
                 }
-                let id = match pkg.source.as_ref().or_else(|| path_deps.get(&pkg.name)) {
+                let id = match pkg
+                    .source
+                    .as_deref()
+                    .or_else(|| get_source_id(&path_deps, pkg))
+                {
                     // We failed to find a local package in the workspace.
                     // It must have been removed and should be ignored.
                     None => {
                         debug!("path dependency now missing {} v{}", pkg.name, pkg.version);
                         continue;
                     }
-                    Some(&source) => PackageId::new(&pkg.name, &pkg.version, source)?,
+                    Some(&source) => PackageId::try_new(&pkg.name, &pkg.version, source)?,
                 };
 
                 // If a package has a checksum listed directly on it then record
@@ -291,14 +303,13 @@ impl EncodableResolve {
 
         let mut g = Graph::new();
 
-        for &(ref id, _) in live_pkgs.values() {
+        for (id, _) in live_pkgs.values() {
             g.add(*id);
         }
 
         for &(ref id, pkg) in live_pkgs.values() {
-            let deps = match pkg.dependencies {
-                Some(ref deps) => deps,
-                None => continue,
+            let Some(ref deps) = pkg.dependencies else {
+                continue;
             };
 
             for edge in deps.iter() {
@@ -330,13 +341,12 @@ impl EncodableResolve {
         let mut to_remove = Vec::new();
         for (k, v) in metadata.iter().filter(|p| p.0.starts_with(prefix)) {
             to_remove.push(k.to_string());
-            let k = &k[prefix.len()..];
+            let k = k.strip_prefix(prefix).unwrap();
             let enc_id: EncodablePackageId = k
                 .parse()
                 .with_context(|| internal("invalid encoding of checksum in lockfile"))?;
-            let id = match lookup_id(&enc_id) {
-                Some(id) => id,
-                _ => continue,
+            let Some(id) = lookup_id(&enc_id) else {
+                continue;
             };
 
             let v = if v == "<none>" {
@@ -358,8 +368,12 @@ impl EncodableResolve {
 
         let mut unused_patches = Vec::new();
         for pkg in self.patch.unused {
-            let id = match pkg.source.as_ref().or_else(|| path_deps.get(&pkg.name)) {
-                Some(&src) => PackageId::new(&pkg.name, &pkg.version, src)?,
+            let id = match pkg
+                .source
+                .as_deref()
+                .or_else(|| get_source_id(&path_deps, &pkg))
+            {
+                Some(&src) => PackageId::try_new(&pkg.name, &pkg.version, src)?,
                 None => continue,
             };
             unused_patches.push(id);
@@ -389,7 +403,7 @@ impl EncodableResolve {
             version = ResolveVersion::V2;
         }
 
-        Ok(Resolve::new(
+        return Ok(Resolve::new(
             g,
             replacements,
             HashMap::new(),
@@ -398,11 +412,35 @@ impl EncodableResolve {
             unused_patches,
             version,
             HashMap::new(),
-        ))
+        ));
+
+        fn get_source_id<'a>(
+            path_deps: &'a HashMap<String, HashMap<semver::Version, SourceId>>,
+            pkg: &'a EncodableDependency,
+        ) -> Option<&'a SourceId> {
+            path_deps.iter().find_map(|(name, version_source)| {
+                if name != &pkg.name || version_source.len() == 0 {
+                    return None;
+                }
+                if version_source.len() == 1 {
+                    return Some(version_source.values().next().unwrap());
+                }
+                // If there are multiple candidates for the same name, it needs to be determined by combining versions (See #13405).
+                if let Ok(pkg_version) = pkg.version.parse::<semver::Version>() {
+                    if let Some(source_id) = version_source.get(&pkg_version) {
+                        return Some(source_id);
+                    }
+                }
+
+                None
+            })
+        }
     }
 }
 
-fn build_path_deps(ws: &Workspace<'_>) -> CargoResult<HashMap<String, SourceId>> {
+fn build_path_deps(
+    ws: &Workspace<'_>,
+) -> CargoResult<HashMap<String, HashMap<semver::Version, SourceId>>> {
     // If a crate is **not** a path source, then we're probably in a situation
     // such as `cargo install` with a lock file from a remote dependency. In
     // that case we don't need to fixup any path dependencies (as they're not
@@ -412,13 +450,15 @@ fn build_path_deps(ws: &Workspace<'_>) -> CargoResult<HashMap<String, SourceId>>
         .filter(|p| p.package_id().source_id().is_path())
         .collect::<Vec<_>>();
 
-    let mut ret = HashMap::new();
+    let mut ret: HashMap<String, HashMap<semver::Version, SourceId>> = HashMap::new();
     let mut visited = HashSet::new();
     for member in members.iter() {
-        ret.insert(
-            member.package_id().name().to_string(),
-            member.package_id().source_id(),
-        );
+        ret.entry(member.package_id().name().to_string())
+            .or_insert_with(HashMap::new)
+            .insert(
+                member.package_id().version().clone(),
+                member.package_id().source_id(),
+            );
         visited.insert(member.package_id().source_id());
     }
     for member in members.iter() {
@@ -429,7 +469,7 @@ fn build_path_deps(ws: &Workspace<'_>) -> CargoResult<HashMap<String, SourceId>>
             build_dep(dep, ws, &mut ret, &mut visited);
         }
     }
-    for &(_, ref dep) in ws.root_replace() {
+    for (_, dep) in ws.root_replace() {
         build_dep(dep, ws, &mut ret, &mut visited);
     }
 
@@ -438,7 +478,7 @@ fn build_path_deps(ws: &Workspace<'_>) -> CargoResult<HashMap<String, SourceId>>
     fn build_pkg(
         pkg: &Package,
         ws: &Workspace<'_>,
-        ret: &mut HashMap<String, SourceId>,
+        ret: &mut HashMap<String, HashMap<semver::Version, SourceId>>,
         visited: &mut HashSet<SourceId>,
     ) {
         for dep in pkg.dependencies() {
@@ -449,7 +489,7 @@ fn build_path_deps(ws: &Workspace<'_>) -> CargoResult<HashMap<String, SourceId>>
     fn build_dep(
         dep: &Dependency,
         ws: &Workspace<'_>,
-        ret: &mut HashMap<String, SourceId>,
+        ret: &mut HashMap<String, HashMap<semver::Version, SourceId>>,
         visited: &mut HashSet<SourceId>,
     ) {
         let id = dep.source_id();
@@ -460,11 +500,13 @@ fn build_path_deps(ws: &Workspace<'_>) -> CargoResult<HashMap<String, SourceId>>
             Ok(p) => p.join("Cargo.toml"),
             Err(_) => return,
         };
-        let pkg = match ws.load(&path) {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-        ret.insert(pkg.name().to_string(), pkg.package_id().source_id());
+        let Ok(pkg) = ws.load(&path) else { return };
+        ret.entry(pkg.package_id().name().to_string())
+            .or_insert_with(HashMap::new)
+            .insert(
+                pkg.package_id().version().clone(),
+                pkg.package_id().source_id(),
+            );
         visited.insert(pkg.package_id().source_id());
         build_pkg(&pkg, ws, ret, visited);
     }
@@ -480,17 +522,93 @@ impl Patch {
 pub struct EncodableDependency {
     name: String,
     version: String,
-    source: Option<SourceId>,
+    source: Option<EncodableSourceId>,
     checksum: Option<String>,
     dependencies: Option<Vec<EncodablePackageId>>,
     replace: Option<EncodablePackageId>,
 }
 
+/// Pretty much equivalent to [`SourceId`] with a different serialization method.
+///
+/// The serialization for `SourceId` doesn't do URL encode for parameters.
+/// In contrast, this type is aware of that whenever [`ResolveVersion`] allows
+/// us to do so (v4 or later).
+#[derive(Deserialize, Debug, PartialOrd, Ord, Clone)]
+#[serde(transparent)]
+pub struct EncodableSourceId {
+    inner: SourceId,
+    /// We don't care about the deserialization of this, as the `url` crate
+    /// will always decode as the URL was encoded. Only when a [`Resolve`]
+    /// turns into a [`EncodableResolve`] will it set the value accordingly
+    /// via [`encodable_source_id`].
+    #[serde(skip)]
+    encoded: bool,
+}
+
+impl EncodableSourceId {
+    /// Creates a `EncodableSourceId` that always encodes URL params.
+    fn new(inner: SourceId) -> Self {
+        Self {
+            inner,
+            encoded: true,
+        }
+    }
+
+    /// Creates a `EncodableSourceId` that doesn't encode URL params. This is
+    /// for backward compatibility for order lockfile version.
+    fn without_url_encoded(inner: SourceId) -> Self {
+        Self {
+            inner,
+            encoded: false,
+        }
+    }
+
+    /// Encodes the inner [`SourceId`] as a URL.
+    fn as_url(&self) -> impl fmt::Display + '_ {
+        if self.encoded {
+            self.inner.as_encoded_url()
+        } else {
+            self.inner.as_url()
+        }
+    }
+}
+
+impl std::ops::Deref for EncodableSourceId {
+    type Target = SourceId;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl ser::Serialize for EncodableSourceId {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: ser::Serializer,
+    {
+        s.collect_str(&self.as_url())
+    }
+}
+
+impl std::hash::Hash for EncodableSourceId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.inner.hash(state)
+    }
+}
+
+impl std::cmp::PartialEq for EncodableSourceId {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl std::cmp::Eq for EncodableSourceId {}
+
 #[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Hash, Clone)]
 pub struct EncodablePackageId {
     name: String,
     version: Option<String>,
-    source: Option<SourceId>,
+    source: Option<EncodableSourceId>,
 }
 
 impl fmt::Display for EncodablePackageId {
@@ -515,8 +633,8 @@ impl FromStr for EncodablePackageId {
         let version = s.next();
         let source_id = match s.next() {
             Some(s) => {
-                if s.starts_with('(') && s.ends_with(')') {
-                    Some(SourceId::from_url(&s[1..s.len() - 1])?)
+                if let Some(s) = s.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+                    Some(SourceId::from_url(s)?)
                 } else {
                     anyhow::bail!("invalid serialized PackageId")
                 }
@@ -527,7 +645,8 @@ impl FromStr for EncodablePackageId {
         Ok(EncodablePackageId {
             name: name.to_string(),
             version: version.map(|v| v.to_string()),
-            source: source_id,
+            // Default to url encoded.
+            source: source_id.map(EncodableSourceId::new),
         })
     }
 }
@@ -555,6 +674,7 @@ impl<'de> de::Deserialize<'de> for EncodablePackageId {
 }
 
 impl ser::Serialize for Resolve {
+    #[tracing::instrument(skip_all)]
     fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
     where
         S: ser::Serializer,
@@ -595,7 +715,7 @@ impl ser::Serialize for Resolve {
                 .map(|id| EncodableDependency {
                     name: id.name().to_string(),
                     version: id.version().to_string(),
-                    source: encode_source(id.source_id()),
+                    source: encodable_source_id(id.source_id(), self.version()),
                     dependencies: None,
                     replace: None,
                     checksum: if self.version() >= ResolveVersion::V2 {
@@ -612,6 +732,8 @@ impl ser::Serialize for Resolve {
             metadata,
             patch,
             version: match self.version() {
+                ResolveVersion::V5 => Some(5),
+                ResolveVersion::V4 => Some(4),
                 ResolveVersion::V3 => Some(3),
                 ResolveVersion::V2 | ResolveVersion::V1 => None,
             },
@@ -667,7 +789,7 @@ fn encodable_resolve_node(
     EncodableDependency {
         name: id.name().to_string(),
         version: id.version().to_string(),
-        source: encode_source(id.source_id()),
+        source: encodable_source_id(id.source_id(), resolve.version()),
         dependencies: deps,
         replace,
         checksum: if resolve.version() >= ResolveVersion::V2 {
@@ -693,7 +815,7 @@ pub fn encodable_package_id(
             }
         }
     }
-    let mut source = encode_source(id_to_encode).map(|s| s.with_precise(None));
+    let mut source = encodable_source_id(id_to_encode.without_precise(), resolve_version);
     if let Some(counts) = &state.counts {
         let version_counts = &counts[&id.name()];
         if version_counts[&id.version()] == 1 {
@@ -710,10 +832,14 @@ pub fn encodable_package_id(
     }
 }
 
-fn encode_source(id: SourceId) -> Option<SourceId> {
+fn encodable_source_id(id: SourceId, version: ResolveVersion) -> Option<EncodableSourceId> {
     if id.is_path() {
         None
     } else {
-        Some(id)
+        Some(if version >= ResolveVersion::V4 {
+            EncodableSourceId::new(id)
+        } else {
+            EncodableSourceId::without_url_encoded(id)
+        })
     }
 }

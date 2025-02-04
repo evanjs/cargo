@@ -1,6 +1,7 @@
 # cargo-check(1)
-{{*set actionverb="Check"}}
-{{*set multitarget=true}}
+{{~*set command="check"}}
+{{~*set actionverb="Check"}}
+{{~*set multitarget=true}}
 
 ## NAME
 
@@ -43,8 +44,6 @@ they have `required-features` that are missing.
 
 {{> options-profile-legacy-check }}
 
-{{> options-ignore-rust-version }}
-
 {{> options-timings }}
 
 {{/options}}
@@ -68,7 +67,11 @@ they have `required-features` that are missing.
 {{#options}}
 {{> options-manifest-path }}
 
+{{> options-ignore-rust-version }}
+
 {{> options-locked }}
+
+{{> options-lockfile-path }}
 {{/options}}
 
 {{> section-options-common }}

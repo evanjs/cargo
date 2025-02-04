@@ -56,8 +56,14 @@ available at <https://rust-lang.org>.
 
 ### Manifest Commands
 
+{{man "cargo-add" 1}}\
+&nbsp;&nbsp;&nbsp;&nbsp;Add dependencies to a `Cargo.toml` manifest file.
+
 {{man "cargo-generate-lockfile" 1}}\
 &nbsp;&nbsp;&nbsp;&nbsp;Generate `Cargo.lock` for a project.
+
+{{man "cargo-info" 1}}\
+&nbsp;&nbsp;&nbsp;&nbsp;Display information about a package in the registry. Default registry is crates.io.
 
 {{man "cargo-locate-project" 1}}\
 &nbsp;&nbsp;&nbsp;&nbsp;Print a JSON representation of a `Cargo.toml` file's location.
@@ -68,6 +74,9 @@ available at <https://rust-lang.org>.
 {{man "cargo-pkgid" 1}}\
 &nbsp;&nbsp;&nbsp;&nbsp;Print a fully qualified package specification.
 
+{{man "cargo-remove" 1}}\
+&nbsp;&nbsp;&nbsp;&nbsp;Remove dependencies from a `Cargo.toml` manifest file.
+
 {{man "cargo-tree" 1}}\
 &nbsp;&nbsp;&nbsp;&nbsp;Display a tree visualization of a dependency graph.
 
@@ -76,9 +85,6 @@ available at <https://rust-lang.org>.
 
 {{man "cargo-vendor" 1}}\
 &nbsp;&nbsp;&nbsp;&nbsp;Vendor all dependencies locally.
-
-{{man "cargo-verify-project" 1}}\
-&nbsp;&nbsp;&nbsp;&nbsp;Check correctness of crate manifest.
 
 ### Package Commands
 
@@ -101,6 +107,9 @@ available at <https://rust-lang.org>.
 
 {{man "cargo-login" 1}}\
 &nbsp;&nbsp;&nbsp;&nbsp;Save an API token from the registry locally.
+
+{{man "cargo-logout" 1}}\
+&nbsp;&nbsp;&nbsp;&nbsp;Remove an API token from the registry locally.
 
 {{man "cargo-owner" 1}}\
 &nbsp;&nbsp;&nbsp;&nbsp;Manage the owners of a crate on the registry.
@@ -232,4 +241,5 @@ stable yet and may be subject to change.
 See <https://github.com/rust-lang/cargo/issues> for issues.
 
 ## SEE ALSO
+
 {{man "rustc" 1}}, {{man "rustdoc" 1}}

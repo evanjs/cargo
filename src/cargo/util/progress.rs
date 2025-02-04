@@ -1,20 +1,57 @@
+//! Support for CLI progress bars.
+
 use std::cmp;
-use std::env;
 use std::time::{Duration, Instant};
 
 use crate::core::shell::Verbosity;
-use crate::util::config::ProgressWhen;
-use crate::util::{CargoResult, Config};
+use crate::util::context::ProgressWhen;
+use crate::util::{CargoResult, GlobalContext};
 use cargo_util::is_ci;
 use unicode_width::UnicodeWidthChar;
 
-pub struct Progress<'cfg> {
-    state: Option<State<'cfg>>,
+/// CLI progress bar.
+///
+/// The `Progress` object can be in an enabled or disabled state. When
+/// disabled, calling any of the methods to update it will not display
+/// anything. Disabling is typically done by the user with options such as
+/// `--quiet` or the `term.progress` config option.
+///
+/// There are several methods to update the progress bar and to cause it to
+/// update its display.
+///
+/// The bar will be removed from the display when the `Progress` object is
+/// dropped or [`Progress::clear`] is called.
+///
+/// The progress bar has built-in rate limiting to avoid updating the display
+/// too fast. It should usually be fine to call [`Progress::tick`] as often as
+/// needed, though be cautious if the tick rate is very high or it is
+/// expensive to compute the progress value.
+pub struct Progress<'gctx> {
+    state: Option<State<'gctx>>,
 }
 
+/// Indicates the style of information for displaying the amount of progress.
+///
+/// See also [`Progress::print_now`] for displaying progress without a bar.
 pub enum ProgressStyle {
+    /// Displays progress as a percentage.
+    ///
+    /// Example: `Fetch [=====================>   ]  88.15%`
+    ///
+    /// This is good for large values like number of bytes downloaded.
     Percentage,
+    /// Displays progress as a ratio.
+    ///
+    /// Example: `Building [===>                      ] 35/222`
+    ///
+    /// This is good for smaller values where the exact number is useful to see.
     Ratio,
+    /// Does not display an exact value of how far along it is.
+    ///
+    /// Example: `Fetch [===========>                     ]`
+    ///
+    /// This is good for situations where the exact value is an approximation,
+    /// and thus there isn't anything accurate to display to the user.
     Indeterminate,
 }
 
@@ -23,8 +60,8 @@ struct Throttle {
     last_update: Instant,
 }
 
-struct State<'cfg> {
-    config: &'cfg Config,
+struct State<'gctx> {
+    gctx: &'gctx GlobalContext,
     format: Format,
     name: String,
     done: bool,
@@ -39,36 +76,50 @@ struct Format {
     max_print: usize,
 }
 
-impl<'cfg> Progress<'cfg> {
-    pub fn with_style(name: &str, style: ProgressStyle, cfg: &'cfg Config) -> Progress<'cfg> {
+impl<'gctx> Progress<'gctx> {
+    /// Creates a new progress bar.
+    ///
+    /// The first parameter is the text displayed to the left of the bar, such
+    /// as "Fetching".
+    ///
+    /// The progress bar is not displayed until explicitly updated with one if
+    /// its methods.
+    ///
+    /// The progress bar may be created in a disabled state if the user has
+    /// disabled progress display (such as with the `--quiet` option).
+    pub fn with_style(
+        name: &str,
+        style: ProgressStyle,
+        gctx: &'gctx GlobalContext,
+    ) -> Progress<'gctx> {
         // report no progress when -q (for quiet) or TERM=dumb are set
         // or if running on Continuous Integration service like Travis where the
         // output logs get mangled.
-        let dumb = match env::var("TERM") {
+        let dumb = match gctx.get_env("TERM") {
             Ok(term) => term == "dumb",
             Err(_) => false,
         };
-        let progress_config = cfg.progress_config();
+        let progress_config = gctx.progress_config();
         match progress_config.when {
-            ProgressWhen::Always => return Progress::new_priv(name, style, cfg),
+            ProgressWhen::Always => return Progress::new_priv(name, style, gctx),
             ProgressWhen::Never => return Progress { state: None },
             ProgressWhen::Auto => {}
         }
-        if cfg.shell().verbosity() == Verbosity::Quiet || dumb || is_ci() {
+        if gctx.shell().verbosity() == Verbosity::Quiet || dumb || is_ci() {
             return Progress { state: None };
         }
-        Progress::new_priv(name, style, cfg)
+        Progress::new_priv(name, style, gctx)
     }
 
-    fn new_priv(name: &str, style: ProgressStyle, cfg: &'cfg Config) -> Progress<'cfg> {
-        let progress_config = cfg.progress_config();
+    fn new_priv(name: &str, style: ProgressStyle, gctx: &'gctx GlobalContext) -> Progress<'gctx> {
+        let progress_config = gctx.progress_config();
         let width = progress_config
             .width
-            .or_else(|| cfg.shell().err_width().progress_max_width());
+            .or_else(|| gctx.shell().err_width().progress_max_width());
 
         Progress {
             state: width.map(|n| State {
-                config: cfg,
+                gctx,
                 format: Format {
                     style,
                     max_width: n,
@@ -85,22 +136,36 @@ impl<'cfg> Progress<'cfg> {
         }
     }
 
+    /// Disables the progress bar, ensuring it won't be displayed.
     pub fn disable(&mut self) {
         self.state = None;
     }
 
+    /// Returns whether or not the progress bar is allowed to be displayed.
     pub fn is_enabled(&self) -> bool {
         self.state.is_some()
     }
 
-    pub fn new(name: &str, cfg: &'cfg Config) -> Progress<'cfg> {
-        Self::with_style(name, ProgressStyle::Percentage, cfg)
+    /// Creates a new `Progress` with the [`ProgressStyle::Percentage`] style.
+    ///
+    /// See [`Progress::with_style`] for more information.
+    pub fn new(name: &str, gctx: &'gctx GlobalContext) -> Progress<'gctx> {
+        Self::with_style(name, ProgressStyle::Percentage, gctx)
     }
 
+    /// Updates the state of the progress bar.
+    ///
+    /// * `cur` should be how far along the progress is.
+    /// * `max` is the maximum value for the progress bar.
+    /// * `msg` is a small piece of text to display at the end of the progress
+    ///   bar. It will be truncated with `...` if it does not fit on the
+    ///   terminal.
+    ///
+    /// This may not actually update the display if `tick` is being called too
+    /// quickly.
     pub fn tick(&mut self, cur: usize, max: usize, msg: &str) -> CargoResult<()> {
-        let s = match &mut self.state {
-            Some(s) => s,
-            None => return Ok(()),
+        let Some(s) = &mut self.state else {
+            return Ok(());
         };
 
         // Don't update too often as it can cause excessive performance loss
@@ -122,6 +187,14 @@ impl<'cfg> Progress<'cfg> {
         s.tick(cur, max, msg)
     }
 
+    /// Updates the state of the progress bar.
+    ///
+    /// This is the same as [`Progress::tick`], but ignores rate throttling
+    /// and forces the display to be updated immediately.
+    ///
+    /// This may be useful for situations where you know you aren't calling
+    /// `tick` too fast, and accurate information is more important than
+    /// limiting the console update rate.
     pub fn tick_now(&mut self, cur: usize, max: usize, msg: &str) -> CargoResult<()> {
         match self.state {
             Some(ref mut s) => s.tick(cur, max, msg),
@@ -129,6 +202,10 @@ impl<'cfg> Progress<'cfg> {
         }
     }
 
+    /// Returns whether or not updates are currently being throttled.
+    ///
+    /// This can be useful if computing the values for calling the
+    /// [`Progress::tick`] function may require some expensive work.
     pub fn update_allowed(&mut self) -> bool {
         match &mut self.state {
             Some(s) => s.throttle.allowed(),
@@ -136,6 +213,14 @@ impl<'cfg> Progress<'cfg> {
         }
     }
 
+    /// Displays progress without a bar.
+    ///
+    /// The given `msg` is the text to display after the status message.
+    ///
+    /// Example: `Downloading 61 crates, remaining bytes: 28.0 MB`
+    ///
+    /// This does not have any rate limit throttling, so be careful about
+    /// calling it too often.
     pub fn print_now(&mut self, msg: &str) -> CargoResult<()> {
         match &mut self.state {
             Some(s) => s.print("", msg),
@@ -143,6 +228,7 @@ impl<'cfg> Progress<'cfg> {
         }
     }
 
+    /// Clears the progress bar from the console.
     pub fn clear(&mut self) {
         if let Some(ref mut s) = self.state {
             s.clear();
@@ -180,7 +266,7 @@ impl Throttle {
     }
 }
 
-impl<'cfg> State<'cfg> {
+impl<'gctx> State<'gctx> {
     fn tick(&mut self, cur: usize, max: usize, msg: &str) -> CargoResult<()> {
         if self.done {
             return Ok(());
@@ -215,8 +301,8 @@ impl<'cfg> State<'cfg> {
         }
 
         // Only update if the line has changed.
-        if self.config.shell().is_cleared() || self.last_line.as_ref() != Some(&line) {
-            let mut shell = self.config.shell();
+        if self.gctx.shell().is_cleared() || self.last_line.as_ref() != Some(&line) {
+            let mut shell = self.gctx.shell();
             shell.set_needs_clear(false);
             shell.status_header(&self.name)?;
             write!(shell.err(), "{}\r", line)?;
@@ -229,15 +315,15 @@ impl<'cfg> State<'cfg> {
 
     fn clear(&mut self) {
         // No need to clear if the progress is not currently being displayed.
-        if self.last_line.is_some() && !self.config.shell().is_cleared() {
-            self.config.shell().err_erase_line();
+        if self.last_line.is_some() && !self.gctx.shell().is_cleared() {
+            self.gctx.shell().err_erase_line();
             self.last_line = None;
         }
     }
 
     fn try_update_max_width(&mut self) {
         if self.fixed_width.is_none() {
-            if let Some(n) = self.config.shell().err_width().progress_max_width() {
+            if let Some(n) = self.gctx.shell().err_width().progress_max_width() {
                 self.format.max_width = n;
             }
         }
@@ -257,9 +343,8 @@ impl Format {
             ProgressStyle::Indeterminate => String::new(),
         };
         let extra_len = stats.len() + 2 /* [ and ] */ + 15 /* status header */;
-        let display_width = match self.width().checked_sub(extra_len) {
-            Some(n) => n,
-            None => return None,
+        let Some(display_width) = self.width().checked_sub(extra_len) else {
+            return None;
         };
 
         let mut string = String::with_capacity(self.max_width);
@@ -323,7 +408,7 @@ impl Format {
     }
 }
 
-impl<'cfg> Drop for State<'cfg> {
+impl<'gctx> Drop for State<'gctx> {
     fn drop(&mut self) {
         self.clear();
     }

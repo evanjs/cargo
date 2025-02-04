@@ -1,15 +1,16 @@
 use cargo_test_support::basic_manifest;
 use cargo_test_support::compare::assert_ui;
-use cargo_test_support::curr_dir;
+use cargo_test_support::current_dir;
+use cargo_test_support::file;
 use cargo_test_support::git;
+use cargo_test_support::prelude::*;
 use cargo_test_support::project;
-use cargo_test_support::CargoCommand;
-
-use crate::cargo_remove::init_registry;
+use cargo_test_support::str;
+use cargo_test_support::CargoCommandExt;
 
 #[cargo_test]
 fn case() {
-    init_registry();
+    cargo_test_support::registry::init();
 
     let git_project1 = git::new("bar1", |project| {
         project
@@ -19,6 +20,13 @@ fn case() {
     .url();
 
     let git_project2 = git::new("bar2", |project| {
+        project
+            .file("Cargo.toml", &basic_manifest("bar", "0.1.0"))
+            .file("src/lib.rs", "")
+    })
+    .url();
+
+    let git_project3 = git::new("bar3", |project| {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.1.0"))
             .file("src/lib.rs", "")
@@ -35,12 +43,13 @@ fn case() {
                  [package]\n\
                  name = \"my-project\"\n\
                  version = \"0.1.0\"\n\
+                 edition = \"2015\"\n\
                  \n\
                  [dependencies]\n\
                  bar = {{ git = \"{git_project1}\" }}\n\
                  \n\
                  [patch.\"{git_project1}\"]\n\
-                 bar = {{ git = \"{git_project2}\" }}\n\
+                 bar = {{ git = \"{git_project3}\" }}\n\
                  \n\
                  [patch.crates-io]\n\
                  bar = {{ git = \"{git_project2}\" }}\n",
@@ -65,8 +74,8 @@ fn case() {
         .current_dir(&in_project.root())
         .assert()
         .success()
-        .stdout_matches_path(curr_dir!().join("stdout.log"))
-        .stderr_matches_path(curr_dir!().join("stderr.log"));
+        .stdout_eq(str![""])
+        .stderr_eq(file!["stderr.term.svg"]);
 
-    assert_ui().subset_matches(curr_dir!().join("out"), &in_project.root());
+    assert_ui().subset_matches(current_dir!().join("out"), &in_project.root());
 }

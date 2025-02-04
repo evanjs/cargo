@@ -1,6 +1,7 @@
 # cargo-remove(1)
-{{*set actionverb="Remove"}}
-{{*set nouns="removes"}}
+{{~*set command="remove"}}
+{{~*set actionverb="Remove"}}
+{{~*set nouns="removes"}}
 
 ## NAME
 
@@ -30,6 +31,8 @@ Remove as a [build dependency](../reference/specifying-dependencies.html#build-d
 
 {{#option "`--target` _target_" }}
 Remove as a dependency to the [given target platform](../reference/specifying-dependencies.html#platform-specific-dependencies).
+
+To avoid unexpected shell expansions, you may use quotes around each target, e.g., `--target 'cfg(unix)'`.
 {{/option}}
 
 {{/options}}
@@ -56,6 +59,8 @@ Don't actually write to the manifest.
 {{> options-manifest-path }}
 
 {{> options-locked }}
+
+{{> options-lockfile-path }}
 {{/options}}
 
 ### Package Selection

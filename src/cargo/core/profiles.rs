@@ -1,4 +1,4 @@
-//! # Profiles: built-in and customizable compiler flag presets
+//! Handles built-in and customizable compiler flag presets.
 //!
 //! [`Profiles`] is a collections of built-in profiles, and profiles defined
 //! in the root manifest and configurations.
@@ -24,14 +24,22 @@
 use crate::core::compiler::{CompileKind, CompileTarget, Unit};
 use crate::core::dependency::Artifact;
 use crate::core::resolver::features::FeaturesFor;
-use crate::core::{PackageId, PackageIdSpec, Resolve, Shell, Target, Workspace};
+use crate::core::Feature;
+use crate::core::{
+    PackageId, PackageIdSpec, PackageIdSpecQuery, Resolve, Shell, Target, Workspace,
+};
 use crate::util::interning::InternedString;
-use crate::util::toml::{ProfilePackageSpec, StringOrBool, TomlProfile, TomlProfiles, U32OrBool};
-use crate::util::{closest_msg, config, CargoResult, Config};
+use crate::util::toml::validate_profile;
+use crate::util::{closest_msg, context, CargoResult, GlobalContext};
 use anyhow::{bail, Context as _};
+use cargo_util_schemas::manifest::TomlTrimPaths;
+use cargo_util_schemas::manifest::TomlTrimPathsValue;
+use cargo_util_schemas::manifest::{
+    ProfilePackageSpec, StringOrBool, TomlDebugInfo, TomlProfile, TomlProfiles,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
-use std::{cmp, env, fmt, hash};
+use std::{cmp, fmt, hash};
 
 /// Collection of all profiles.
 ///
@@ -61,13 +69,13 @@ pub struct Profiles {
 
 impl Profiles {
     pub fn new(ws: &Workspace<'_>, requested_profile: InternedString) -> CargoResult<Profiles> {
-        let config = ws.config();
-        let incremental = match env::var_os("CARGO_INCREMENTAL") {
+        let gctx = ws.gctx();
+        let incremental = match gctx.get_env_os("CARGO_INCREMENTAL") {
             Some(v) => Some(v == "1"),
-            None => config.build_config()?.incremental,
+            None => gctx.build_config()?.incremental,
         };
         let mut profiles = merge_config_profiles(ws, requested_profile)?;
-        let rustc_host = ws.config().load_global_rustc(Some(ws))?.host;
+        let rustc_host = ws.gctx().load_global_rustc(Some(ws))?.host;
 
         let mut profile_makers = Profiles {
             incremental,
@@ -78,7 +86,9 @@ impl Profiles {
             rustc_host,
         };
 
-        Self::add_root_profiles(&mut profile_makers, &profiles);
+        let trim_paths_enabled = ws.unstable_features().is_enabled(Feature::trim_paths())
+            || gctx.cli_unstable().trim_paths;
+        Self::add_root_profiles(&mut profile_makers, &profiles, trim_paths_enabled);
 
         // Merge with predefined profiles.
         use std::collections::btree_map::Entry;
@@ -102,7 +112,7 @@ impl Profiles {
         // Verify that the requested profile is defined *somewhere*.
         // This simplifies the API (no need for CargoResult), and enforces
         // assumptions about how config profiles are loaded.
-        profile_makers.get_profile_maker(requested_profile)?;
+        profile_makers.get_profile_maker(&requested_profile)?;
         Ok(profile_makers)
     }
 
@@ -121,6 +131,7 @@ impl Profiles {
     fn add_root_profiles(
         profile_makers: &mut Profiles,
         profiles: &BTreeMap<InternedString, TomlProfile>,
+        trim_paths_enabled: bool,
     ) {
         profile_makers.by_name.insert(
             InternedString::new("dev"),
@@ -129,7 +140,10 @@ impl Profiles {
 
         profile_makers.by_name.insert(
             InternedString::new("release"),
-            ProfileMaker::new(Profile::default_release(), profiles.get("release").cloned()),
+            ProfileMaker::new(
+                Profile::default_release(trim_paths_enabled),
+                profiles.get("release").cloned(),
+            ),
         );
     }
 
@@ -140,21 +154,21 @@ impl Profiles {
             (
                 "bench",
                 TomlProfile {
-                    inherits: Some(InternedString::new("release")),
+                    inherits: Some(String::from("release")),
                     ..TomlProfile::default()
                 },
             ),
             (
                 "test",
                 TomlProfile {
-                    inherits: Some(InternedString::new("dev")),
+                    inherits: Some(String::from("dev")),
                     ..TomlProfile::default()
                 },
             ),
             (
                 "doc",
                 TomlProfile {
-                    inherits: Some(InternedString::new("dev")),
+                    inherits: Some(String::from("dev")),
                     ..TomlProfile::default()
                 },
             ),
@@ -171,7 +185,7 @@ impl Profiles {
         match &profile.dir_name {
             None => {}
             Some(dir_name) => {
-                self.dir_names.insert(name, dir_name.to_owned());
+                self.dir_names.insert(name, InternedString::new(dir_name));
             }
         }
 
@@ -210,12 +224,13 @@ impl Profiles {
         set: &mut HashSet<InternedString>,
         profiles: &BTreeMap<InternedString, TomlProfile>,
     ) -> CargoResult<ProfileMaker> {
-        let mut maker = match profile.inherits {
+        let mut maker = match &profile.inherits {
             Some(inherits_name) if inherits_name == "dev" || inherits_name == "release" => {
                 // These are the root profiles added in `add_root_profiles`.
-                self.get_profile_maker(inherits_name).unwrap().clone()
+                self.get_profile_maker(&inherits_name).unwrap().clone()
             }
             Some(inherits_name) => {
+                let inherits_name = InternedString::new(&inherits_name);
                 if !set.insert(inherits_name) {
                     bail!(
                         "profile inheritance loop detected with profile `{}` inheriting `{}`",
@@ -261,7 +276,7 @@ impl Profiles {
         unit_for: UnitFor,
         kind: CompileKind,
     ) -> Profile {
-        let maker = self.get_profile_maker(self.requested_profile).unwrap();
+        let maker = self.get_profile_maker(&self.requested_profile).unwrap();
         let mut profile = maker.get_profile(Some(pkg_id), is_member, unit_for.is_for_host());
 
         // Dealing with `panic=abort` and `panic=unwind` requires some special
@@ -276,15 +291,13 @@ impl Profiles {
         // platform which has a stable `-Csplit-debuginfo` option for rustc,
         // and it's typically much faster than running `dsymutil` on all builds
         // in incremental cases.
-        if let Some(debug) = profile.debuginfo.to_option() {
-            if profile.split_debuginfo.is_none() && debug > 0 {
-                let target = match &kind {
-                    CompileKind::Host => self.rustc_host.as_str(),
-                    CompileKind::Target(target) => target.short_name(),
-                };
-                if target.contains("-apple-") {
-                    profile.split_debuginfo = Some(InternedString::new("unpacked"));
-                }
+        if profile.debuginfo.is_turned_on() && profile.split_debuginfo.is_none() {
+            let target = match &kind {
+                CompileKind::Host => self.rustc_host.as_str(),
+                CompileKind::Target(target) => target.short_name(),
+            };
+            if target.contains("-apple-") {
+                profile.split_debuginfo = Some(InternedString::new("unpacked"));
             }
         }
 
@@ -317,6 +330,7 @@ impl Profiles {
         result.root = for_unit_profile.root;
         result.debuginfo = for_unit_profile.debuginfo;
         result.opt_level = for_unit_profile.opt_level;
+        result.trim_paths = for_unit_profile.trim_paths.clone();
         result
     }
 
@@ -325,7 +339,7 @@ impl Profiles {
     /// select for the package that was actually built.
     pub fn base_profile(&self) -> Profile {
         let profile_name = self.requested_profile;
-        let maker = self.get_profile_maker(profile_name).unwrap();
+        let maker = self.get_profile_maker(&profile_name).unwrap();
         maker.get_profile(None, /*is_member*/ true, /*is_for_host*/ false)
     }
 
@@ -372,9 +386,9 @@ impl Profiles {
     }
 
     /// Returns the profile maker for the given profile name.
-    fn get_profile_maker(&self, name: InternedString) -> CargoResult<&ProfileMaker> {
+    fn get_profile_maker(&self, name: &str) -> CargoResult<&ProfileMaker> {
         self.by_name
-            .get(&name)
+            .get(name)
             .ok_or_else(|| anyhow::format_err!("profile `{}` is not defined", name))
     }
 }
@@ -449,9 +463,7 @@ impl ProfileMaker {
             // a unit is shared. If that's the case, we'll use the deferred value
             // below so the unit can be reused, otherwise we can avoid emitting
             // the unit's debuginfo.
-            if let Some(debuginfo) = profile.debuginfo.to_option() {
-                profile.debuginfo = DebugInfo::Deferred(debuginfo);
-            }
+            profile.debuginfo = DebugInfo::Deferred(profile.debuginfo.into_inner());
         }
         // ... and next comes any other sorts of overrides specified in
         // profiles, such as `[profile.release.build-override]` or
@@ -523,16 +535,13 @@ fn merge_profile(profile: &mut Profile, toml: &TomlProfile) {
         None => {}
     }
     if toml.codegen_backend.is_some() {
-        profile.codegen_backend = toml.codegen_backend;
+        profile.codegen_backend = toml.codegen_backend.as_ref().map(InternedString::from);
     }
     if toml.codegen_units.is_some() {
         profile.codegen_units = toml.codegen_units;
     }
-    match toml.debug {
-        Some(U32OrBool::U32(debug)) => profile.debuginfo = DebugInfo::Explicit(debug),
-        Some(U32OrBool::Bool(true)) => profile.debuginfo = DebugInfo::Explicit(2),
-        Some(U32OrBool::Bool(false)) => profile.debuginfo = DebugInfo::None,
-        None => {}
+    if let Some(debuginfo) = toml.debug {
+        profile.debuginfo = DebugInfo::Resolved(debuginfo);
     }
     if let Some(debug_assertions) = toml.debug_assertions {
         profile.debug_assertions = debug_assertions;
@@ -558,13 +567,23 @@ fn merge_profile(profile: &mut Profile, toml: &TomlProfile) {
         profile.incremental = incremental;
     }
     if let Some(flags) = &toml.rustflags {
-        profile.rustflags = flags.clone();
+        profile.rustflags = flags.iter().map(InternedString::from).collect();
+    }
+    if let Some(trim_paths) = &toml.trim_paths {
+        profile.trim_paths = Some(trim_paths.clone());
     }
     profile.strip = match toml.strip {
-        Some(StringOrBool::Bool(true)) => Strip::Named(InternedString::new("symbols")),
-        None | Some(StringOrBool::Bool(false)) => Strip::None,
-        Some(StringOrBool::String(ref n)) if n.as_str() == "none" => Strip::None,
-        Some(StringOrBool::String(ref n)) => Strip::Named(InternedString::new(n)),
+        Some(StringOrBool::Bool(true)) => {
+            Strip::Resolved(StripInner::Named(InternedString::new("symbols")))
+        }
+        Some(StringOrBool::Bool(false)) => Strip::Resolved(StripInner::None),
+        Some(StringOrBool::String(ref n)) if n.as_str() == "none" => {
+            Strip::Resolved(StripInner::None)
+        }
+        Some(StringOrBool::String(ref n)) => {
+            Strip::Resolved(StripInner::Named(InternedString::new(n)))
+        }
+        None => Strip::Deferred(StripInner::None),
     };
 }
 
@@ -603,6 +622,9 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Vec::is_empty")] // remove when `rustflags` is stablized
     // Note that `rustflags` is used for the cargo-feature `profile_rustflags`
     pub rustflags: Vec<InternedString>,
+    // remove when `-Ztrim-paths` is stablized
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trim_paths: Option<TomlTrimPaths>,
 }
 
 impl Default for Profile {
@@ -614,15 +636,16 @@ impl Default for Profile {
             lto: Lto::Bool(false),
             codegen_backend: None,
             codegen_units: None,
-            debuginfo: DebugInfo::None,
+            debuginfo: DebugInfo::Resolved(TomlDebugInfo::None),
             debug_assertions: false,
             split_debuginfo: None,
             overflow_checks: false,
             rpath: false,
             incremental: false,
             panic: PanicStrategy::Unwind,
-            strip: Strip::None,
+            strip: Strip::Deferred(StripInner::None),
             rustflags: vec![],
+            trim_paths: None,
         }
     }
 }
@@ -632,7 +655,7 @@ compact_debug! {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             let (default, default_name) = match self.name.as_str() {
                 "dev" => (Profile::default_dev(), "default_dev()"),
-                "release" => (Profile::default_release(), "default_release()"),
+                "release" => (Profile::default_release(false), "default_release()"),
                 _ => (Profile::default(), "default()"),
             };
             [debug_the_fields(
@@ -651,6 +674,7 @@ compact_debug! {
                 panic
                 strip
                 rustflags
+                trim_paths
             )]
         }
     }
@@ -683,7 +707,7 @@ impl Profile {
         Profile {
             name: InternedString::new("dev"),
             root: ProfileRoot::Debug,
-            debuginfo: DebugInfo::Explicit(2),
+            debuginfo: DebugInfo::Resolved(TomlDebugInfo::Full),
             debug_assertions: true,
             overflow_checks: true,
             incremental: true,
@@ -692,11 +716,13 @@ impl Profile {
     }
 
     /// Returns a built-in `release` profile.
-    fn default_release() -> Profile {
+    fn default_release(trim_paths_enabled: bool) -> Profile {
+        let trim_paths = trim_paths_enabled.then(|| TomlTrimPathsValue::Object.into());
         Profile {
             name: InternedString::new("release"),
             root: ProfileRoot::Release,
             opt_level: InternedString::new("3"),
+            trim_paths,
             ..Profile::default()
         }
     }
@@ -704,7 +730,7 @@ impl Profile {
     /// Compares all fields except `name`, which doesn't affect compilation.
     /// This is necessary for `Unit` deduplication for things like "test" and
     /// "dev" which are essentially the same.
-    fn comparable(&self) -> impl Hash + Eq {
+    fn comparable(&self) -> impl Hash + Eq + '_ {
         (
             self.opt_level,
             self.lto,
@@ -715,20 +741,17 @@ impl Profile {
             self.debug_assertions,
             self.overflow_checks,
             self.rpath,
-            self.incremental,
-            self.panic,
-            self.strip,
+            (self.incremental, self.panic, self.strip),
+            &self.rustflags,
+            &self.trim_paths,
         )
     }
 }
 
 /// The debuginfo level setting.
 ///
-/// This is semantically an `Option<u32>`, and should be used as so via the
-/// [DebugInfo::to_option] method for all intents and purposes:
-/// - `DebugInfo::None` corresponds to `None`
-/// - `DebugInfo::Explicit(u32)` and `DebugInfo::Deferred` correspond to
-///   `Option<u32>::Some`
+/// This is semantically a [`TomlDebugInfo`], and should be used as so via the
+/// [`DebugInfo::into_inner`] method for all intents and purposes.
 ///
 /// Internally, it's used to model a debuginfo level whose value can be deferred
 /// for optimization purposes: host dependencies usually don't need the same
@@ -740,35 +763,34 @@ impl Profile {
 #[derive(Debug, Copy, Clone, serde::Serialize)]
 #[serde(untagged)]
 pub enum DebugInfo {
-    /// No debuginfo level was set.
-    None,
-    /// A debuginfo level that is explicitly set, by a profile or a user.
-    Explicit(u32),
+    /// A debuginfo level that is fixed and will not change.
+    ///
+    /// This can be set by a profile, user, or default value.
+    Resolved(TomlDebugInfo),
     /// For internal purposes: a deferred debuginfo level that can be optimized
     /// away, but has this value otherwise.
     ///
-    /// Behaves like `Explicit` in all situations except for the default build
+    /// Behaves like `Resolved` in all situations except for the default build
     /// dependencies profile: whenever a build dependency is not shared with
     /// runtime dependencies, this level is weakened to a lower level that is
-    /// faster to build (see [DebugInfo::weaken]).
+    /// faster to build (see [`DebugInfo::weaken`]).
     ///
     /// In all other situations, this level value will be the one to use.
-    Deferred(u32),
+    Deferred(TomlDebugInfo),
 }
 
 impl DebugInfo {
-    /// The main way to interact with this debuginfo level, turning it into an Option.
-    pub fn to_option(&self) -> Option<u32> {
+    /// The main way to interact with this debuginfo level, turning it into a [`TomlDebugInfo`].
+    pub fn into_inner(self) -> TomlDebugInfo {
         match self {
-            DebugInfo::None => None,
-            DebugInfo::Explicit(v) | DebugInfo::Deferred(v) => Some(*v),
+            DebugInfo::Resolved(v) | DebugInfo::Deferred(v) => v,
         }
     }
 
-    /// Returns true if the debuginfo level is high enough (at least 1). Helper
+    /// Returns true if any debuginfo will be generated. Helper
     /// for a common operation on the usual `Option` representation.
     pub(crate) fn is_turned_on(&self) -> bool {
-        self.to_option().unwrap_or(0) != 0
+        !matches!(self.into_inner(), TomlDebugInfo::None)
     }
 
     pub(crate) fn is_deferred(&self) -> bool {
@@ -778,20 +800,20 @@ impl DebugInfo {
     /// Force the deferred, preferred, debuginfo level to a finalized explicit value.
     pub(crate) fn finalize(self) -> Self {
         match self {
-            DebugInfo::Deferred(v) => DebugInfo::Explicit(v),
+            DebugInfo::Deferred(v) => DebugInfo::Resolved(v),
             _ => self,
         }
     }
 
     /// Reset to the lowest level: no debuginfo.
     pub(crate) fn weaken(self) -> Self {
-        DebugInfo::None
+        DebugInfo::Resolved(TomlDebugInfo::None)
     }
 }
 
 impl PartialEq for DebugInfo {
     fn eq(&self, other: &DebugInfo) -> bool {
-        self.to_option().eq(&other.to_option())
+        self.into_inner().eq(&other.into_inner())
     }
 }
 
@@ -799,19 +821,19 @@ impl Eq for DebugInfo {}
 
 impl Hash for DebugInfo {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.to_option().hash(state);
+        self.into_inner().hash(state);
     }
 }
 
 impl PartialOrd for DebugInfo {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.to_option().partial_cmp(&other.to_option())
+        self.into_inner().partial_cmp(&other.into_inner())
     }
 }
 
 impl Ord for DebugInfo {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.to_option().cmp(&other.to_option())
+        self.into_inner().cmp(&other.into_inner())
     }
 }
 
@@ -858,25 +880,84 @@ impl fmt::Display for PanicStrategy {
     }
 }
 
-/// The setting for choosing which symbols to strip
 #[derive(
     Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-#[serde(rename_all = "lowercase")]
-pub enum Strip {
+pub enum StripInner {
     /// Don't remove any symbols
     None,
     /// Named Strip settings
     Named(InternedString),
 }
 
-impl fmt::Display for Strip {
+impl fmt::Display for StripInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Strip::None => "none",
-            Strip::Named(s) => s.as_str(),
+            StripInner::None => "none",
+            StripInner::Named(s) => s.as_str(),
         }
         .fmt(f)
+    }
+}
+
+/// The setting for choosing which symbols to strip.
+///
+/// This is semantically a [`StripInner`], and should be used as so via the
+/// [`Strip::into_inner`] method for all intents and purposes.
+///
+/// Internally, it's used to model a strip option whose value can be deferred
+/// for optimization purposes: when no package being compiled requires debuginfo,
+/// then we can strip debuginfo to remove pre-existing debug symbols from the
+/// standard library.
+#[derive(Clone, Copy, Debug, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Strip {
+    /// A strip option that is fixed and will not change.
+    Resolved(StripInner),
+    /// A strip option that might be overridden by Cargo for optimization
+    /// purposes.
+    Deferred(StripInner),
+}
+
+impl Strip {
+    /// The main way to interact with this strip option, turning it into a [`StripInner`].
+    pub fn into_inner(self) -> StripInner {
+        match self {
+            Strip::Resolved(v) | Strip::Deferred(v) => v,
+        }
+    }
+
+    pub(crate) fn is_deferred(&self) -> bool {
+        matches!(self, Strip::Deferred(_))
+    }
+
+    /// Reset to stripping debuginfo.
+    pub(crate) fn strip_debuginfo(self) -> Self {
+        Strip::Resolved(StripInner::Named("debuginfo".into()))
+    }
+}
+
+impl PartialEq for Strip {
+    fn eq(&self, other: &Self) -> bool {
+        self.into_inner().eq(&other.into_inner())
+    }
+}
+
+impl Hash for Strip {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.into_inner().hash(state);
+    }
+}
+
+impl PartialOrd for Strip {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.into_inner().partial_cmp(&other.into_inner())
+    }
+}
+
+impl Ord for Strip {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.into_inner().cmp(&other.into_inner())
     }
 }
 
@@ -922,16 +1003,16 @@ pub struct UnitFor {
     ///     └── shared_dep build.rs
     /// ```
     ///
-    /// In this example, `foo build.rs` is HOST=true, HOST_FEATURES=false.
+    /// In this example, `foo build.rs` is `HOST=true`, `HOST_FEATURES=false`.
     /// This is so that `foo build.rs` gets the profile settings for build
-    /// scripts (HOST=true) and features of foo (HOST_FEATURES=false) because
+    /// scripts (`HOST=true`) and features of foo (`HOST_FEATURES=false`) because
     /// build scripts need to know which features their package is being built
     /// with.
     ///
     /// But in the case of `shared_dep`, when built as a build dependency,
     /// both flags are true (it only wants the build-dependency features).
     /// When `shared_dep` is built as a normal dependency, then `shared_dep
-    /// build.rs` is HOST=true, HOST_FEATURES=false for the same reasons that
+    /// build.rs` is `HOST=true`, `HOST_FEATURES=false` for the same reasons that
     /// foo's build script is set that way.
     host_features: bool,
     /// How Cargo processes the `panic` setting or profiles.
@@ -1028,7 +1109,7 @@ impl UnitFor {
     /// whether `panic=abort` is supported for tests. Historical versions of
     /// rustc did not support this, but newer versions do with an unstable
     /// compiler flag.
-    pub fn new_test(config: &Config, root_compile_kind: CompileKind) -> UnitFor {
+    pub fn new_test(gctx: &GlobalContext, root_compile_kind: CompileKind) -> UnitFor {
         UnitFor {
             host: false,
             host_features: false,
@@ -1036,7 +1117,7 @@ impl UnitFor {
             // which inherits the panic setting from the dev/release profile
             // (basically avoid recompiles) but historical defaults required
             // that we always unwound.
-            panic_setting: if config.cli_unstable().panic_abort_tests {
+            panic_setting: if gctx.cli_unstable().panic_abort_tests {
                 PanicSetting::ReadProfile
             } else {
                 PanicSetting::AlwaysUnwind
@@ -1049,8 +1130,8 @@ impl UnitFor {
     /// This is a special case for unit tests of a proc-macro.
     ///
     /// Proc-macro unit tests are forced to be run on the host.
-    pub fn new_host_test(config: &Config, root_compile_kind: CompileKind) -> UnitFor {
-        let mut unit_for = UnitFor::new_test(config, root_compile_kind);
+    pub fn new_host_test(gctx: &GlobalContext, root_compile_kind: CompileKind) -> UnitFor {
+        let mut unit_for = UnitFor::new_test(gctx, root_compile_kind);
         unit_for.host = true;
         unit_for.host_features = true;
         unit_for
@@ -1058,7 +1139,7 @@ impl UnitFor {
 
     /// Returns a new copy updated based on the target dependency.
     ///
-    /// This is where the magic happens that the host/host_features settings
+    /// This is where the magic happens that the `host`/`host_features` settings
     /// transition in a sticky fashion. As the dependency graph is being
     /// built, once those flags are set, they stay set for the duration of
     /// that portion of tree.
@@ -1172,7 +1253,11 @@ fn merge_config_profiles(
     requested_profile: InternedString,
 ) -> CargoResult<BTreeMap<InternedString, TomlProfile>> {
     let mut profiles = match ws.profiles() {
-        Some(profiles) => profiles.get_all().clone(),
+        Some(profiles) => profiles
+            .get_all()
+            .iter()
+            .map(|(k, v)| (InternedString::new(k), v.clone()))
+            .collect(),
         None => BTreeMap::new(),
     };
     // Set of profile names to check if defined in config only.
@@ -1184,7 +1269,7 @@ fn merge_config_profiles(
             profile.merge(&config_profile);
         }
         if let Some(inherits) = &profile.inherits {
-            check_to_add.insert(*inherits);
+            check_to_add.insert(InternedString::new(inherits));
         }
     }
     // Add the built-in profiles. This is important for things like `cargo
@@ -1198,10 +1283,10 @@ fn merge_config_profiles(
     while !check_to_add.is_empty() {
         std::mem::swap(&mut current, &mut check_to_add);
         for name in current.drain() {
-            if !profiles.contains_key(&name) {
+            if !profiles.contains_key(name.as_str()) {
                 if let Some(config_profile) = get_config_profile(ws, &name)? {
                     if let Some(inherits) = &config_profile.inherits {
-                        check_to_add.insert(*inherits);
+                        check_to_add.insert(InternedString::new(inherits));
                     }
                     profiles.insert(name, config_profile);
                 }
@@ -1213,29 +1298,27 @@ fn merge_config_profiles(
 
 /// Helper for fetching a profile from config.
 fn get_config_profile(ws: &Workspace<'_>, name: &str) -> CargoResult<Option<TomlProfile>> {
-    let profile: Option<config::Value<TomlProfile>> =
-        ws.config().get(&format!("profile.{}", name))?;
-    let profile = match profile {
-        Some(profile) => profile,
-        None => return Ok(None),
+    let profile: Option<context::Value<TomlProfile>> =
+        ws.gctx().get(&format!("profile.{}", name))?;
+    let Some(profile) = profile else {
+        return Ok(None);
     };
     let mut warnings = Vec::new();
-    profile
-        .val
-        .validate(
-            name,
-            ws.config().cli_unstable(),
-            ws.unstable_features(),
-            &mut warnings,
+    validate_profile(
+        &profile.val,
+        name,
+        ws.gctx().cli_unstable(),
+        ws.unstable_features(),
+        &mut warnings,
+    )
+    .with_context(|| {
+        format!(
+            "config profile `{}` is not valid (defined in `{}`)",
+            name, profile.definition
         )
-        .with_context(|| {
-            format!(
-                "config profile `{}` is not valid (defined in `{}`)",
-                name, profile.definition
-            )
-        })?;
+    })?;
     for warning in warnings {
-        ws.config().shell().warn(warning)?;
+        ws.gctx().shell().warn(warning)?;
     }
     Ok(Some(profile.val))
 }
@@ -1249,13 +1332,11 @@ fn validate_packages_unique(
     name: &str,
     toml: &Option<TomlProfile>,
 ) -> CargoResult<HashSet<PackageIdSpec>> {
-    let toml = match toml {
-        Some(ref toml) => toml,
-        None => return Ok(HashSet::new()),
+    let Some(toml) = toml else {
+        return Ok(HashSet::new());
     };
-    let overrides = match toml.package.as_ref() {
-        Some(overrides) => overrides,
-        None => return Ok(HashSet::new()),
+    let Some(overrides) = toml.package.as_ref() else {
+        return Ok(HashSet::new());
     };
     // Verify that a package doesn't match multiple spec overrides.
     let mut found = HashSet::new();
@@ -1307,9 +1388,8 @@ fn validate_packages_unmatched(
     toml: &TomlProfile,
     found: &HashSet<PackageIdSpec>,
 ) -> CargoResult<()> {
-    let overrides = match toml.package.as_ref() {
-        Some(overrides) => overrides,
-        None => return Ok(()),
+    let Some(overrides) = toml.package.as_ref() else {
+        return Ok(());
     };
 
     // Verify every override matches at least one package.
@@ -1334,7 +1414,12 @@ fn validate_packages_unmatched(
             })
             .collect();
         if name_matches.is_empty() {
-            let suggestion = closest_msg(&spec.name(), resolve.iter(), |p| p.name().as_str());
+            let suggestion = closest_msg(
+                &spec.name(),
+                resolve.iter(),
+                |p| p.name().as_str(),
+                "package",
+            );
             shell.warn(format!(
                 "profile package spec `{}` in profile `{}` did not match any packages{}",
                 spec, name, suggestion

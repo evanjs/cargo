@@ -1,5 +1,4 @@
-
-## Web API
+# Web API
 
 A registry may host a web API at the location defined in `config.json` to
 support any of the actions listed below.
@@ -11,7 +10,7 @@ visit the registry's website to obtain a token, and Cargo can store the token
 using the [`cargo login`] command, or by passing the token on the
 command-line.
 
-Responses use the 200 response code for success.
+Responses use a 2xx response code for success.
 Errors should use an appropriate response code, such as 404.
 Failure
 responses should have a JSON object with the following structure:
@@ -41,13 +40,13 @@ be required in the future.
 
 Cargo sets the following headers for all requests:
 
-- `Content-Type`: `application/json`
+- `Content-Type`: `application/json` (for requests with a body payload)
 - `Accept`: `application/json`
-- `User-Agent`: The Cargo version such as `cargo 1.32.0 (8610973aa
+- `User-Agent`: The Cargo version such as `cargo/1.32.0 (8610973aa
   2019-01-02)`. This may be modified by the user in a configuration value.
   Added in 1.29.
 
-### Publish
+## Publish
 
 - Endpoint: `/api/v1/crates/new`
 - Method: PUT
@@ -56,6 +55,10 @@ Cargo sets the following headers for all requests:
 The publish endpoint is used to publish a new version of a crate. The server
 should validate the crate, make it available for download, and add it to the
 index.
+
+It is not required for the index to be updated before the successful response is sent.
+After a successful response, Cargo will poll the index for a short period of time to identify that the new crate has been added.
+If the crate does not appear in the index after a short period of time, then Cargo will display a warning letting the user know that the new crate is not yet available.
 
 The body of the data sent by Cargo is:
 
@@ -157,7 +160,10 @@ considered as an exhaustive list of restrictions [crates.io] imposes.
     },
     // The `links` string value from the package's manifest, or null if not
     // specified. This field is optional and defaults to null.
-    "links": null
+    "links": null,
+    // The minimal supported Rust version (optional)
+    // This must be a valid version requirement without an operator (e.g. no `=`)
+    "rust_version": null
 }
 ```
 
@@ -177,7 +183,7 @@ A successful response includes the JSON object:
 }
 ```
 
-### Yank
+## Yank
 
 - Endpoint: `/api/v1/crates/{crate_name}/{version}/yank`
 - Method: DELETE
@@ -190,12 +196,12 @@ A successful response includes the JSON object:
 
 ```javascript
 {
-    // Indicates the delete succeeded, always true.
+    // Indicates the yank succeeded, always true.
     "ok": true,
 }
 ```
 
-### Unyank
+## Unyank
 
 - Endpoint: `/api/v1/crates/{crate_name}/{version}/unyank`
 - Method: PUT
@@ -208,12 +214,12 @@ A successful response includes the JSON object:
 
 ```javascript
 {
-    // Indicates the delete succeeded, always true.
+    // Indicates the unyank succeeded, always true.
     "ok": true,
 }
 ```
 
-### Owners
+## Owners
 
 Cargo does not have an inherent notion of users and owners, but it does
 provide the `owner` command to assist managing who has authorization to
@@ -221,7 +227,7 @@ control a crate. It is up to the registry to decide exactly how users and
 owners are handled. See the [publishing documentation] for a description of
 how [crates.io] handles owners via GitHub users and teams.
 
-#### Owners: List
+### Owners: List
 
 - Endpoint: `/api/v1/crates/{crate_name}/owners`
 - Method: GET
@@ -248,7 +254,7 @@ A successful response includes the JSON object:
 }
 ```
 
-#### Owners: Add
+### Owners: Add
 
 - Endpoint: `/api/v1/crates/{crate_name}/owners`
 - Method: PUT
@@ -279,7 +285,7 @@ A successful response includes the JSON object:
 }
 ```
 
-#### Owners: Remove
+### Owners: Remove
 
 - Endpoint: `/api/v1/crates/{crate_name}/owners`
 - Method: DELETE
@@ -301,10 +307,12 @@ A successful response includes the JSON object:
 {
     // Indicates the remove succeeded, always true.
     "ok": true
+    // A string to be displayed to the user. Currently ignored by cargo.
+    "msg": "owners successfully removed",
 }
 ```
 
-### Search
+## Search
 
 - Endpoint: `/api/v1/crates`
 - Method: GET
@@ -337,7 +345,7 @@ A successful response includes the JSON object:
 }
 ```
 
-### Login
+## Login
 
 - Endpoint: `/me`
 

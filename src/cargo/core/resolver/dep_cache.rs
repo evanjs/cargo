@@ -9,7 +9,7 @@
 //!
 //! This module impl that cache in all the gory details
 
-use crate::core::resolver::context::Context;
+use crate::core::resolver::context::ResolverContext;
 use crate::core::resolver::errors::describe_path_in_context;
 use crate::core::resolver::types::{ConflictReason, DepInfo, FeaturesSet};
 use crate::core::resolver::{
@@ -17,28 +17,31 @@ use crate::core::resolver::{
     VersionPreferences,
 };
 use crate::core::{
-    Dependency, FeatureValue, PackageId, PackageIdSpec, QueryKind, Registry, Summary,
+    Dependency, FeatureValue, PackageId, PackageIdSpec, PackageIdSpecQuery, Registry, Summary,
 };
+use crate::sources::source::QueryKind;
+use crate::util::closest_msg;
 use crate::util::errors::CargoResult;
-use crate::util::interning::InternedString;
+use crate::util::interning::{InternedString, INTERNED_DEFAULT};
 
 use anyhow::Context as _;
-use log::debug;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Write;
 use std::rc::Rc;
 use std::task::Poll;
+use tracing::debug;
 
 pub struct RegistryQueryer<'a> {
     pub registry: &'a mut (dyn Registry + 'a),
     replacements: &'a [(PackageIdSpec, Dependency)],
     version_prefs: &'a VersionPreferences,
-    /// If set the list of dependency candidates will be sorted by minimal
-    /// versions first. That allows `cargo update -Z minimal-versions` which will
-    /// specify minimum dependency versions to be used.
-    minimal_versions: bool,
-    /// a cache of `Candidate`s that fulfil a `Dependency`
-    registry_cache: HashMap<Dependency, Poll<Rc<Vec<Summary>>>>,
+    /// a cache of `Candidate`s that fulfil a `Dependency` (and whether `first_version`)
+    registry_cache: HashMap<(Dependency, Option<VersionOrdering>), Poll<Rc<Vec<Summary>>>>,
     /// a cache of `Dependency`s that are required for a `Summary`
+    ///
+    /// HACK: `first_version` is not kept in the cache key is it is 1:1 with
+    /// `parent.is_none()` (the first element of the cache key) as it doesn't change through
+    /// execution.
     summary_cache: HashMap<
         (Option<PackageId>, Summary, ResolveOpts),
         (Rc<(HashSet<InternedString>, Rc<Vec<DepInfo>>)>, bool),
@@ -52,13 +55,11 @@ impl<'a> RegistryQueryer<'a> {
         registry: &'a mut dyn Registry,
         replacements: &'a [(PackageIdSpec, Dependency)],
         version_prefs: &'a VersionPreferences,
-        minimal_versions: bool,
     ) -> Self {
         RegistryQueryer {
             registry,
             replacements,
             version_prefs,
-            minimal_versions,
             registry_cache: HashMap::new(),
             summary_cache: HashMap::new(),
             used_replacements: HashMap::new(),
@@ -96,28 +97,33 @@ impl<'a> RegistryQueryer<'a> {
     /// any candidates are returned which match an override then the override is
     /// applied by performing a second query for what the override should
     /// return.
-    pub fn query(&mut self, dep: &Dependency) -> Poll<CargoResult<Rc<Vec<Summary>>>> {
-        if let Some(out) = self.registry_cache.get(dep).cloned() {
+    pub fn query(
+        &mut self,
+        dep: &Dependency,
+        first_version: Option<VersionOrdering>,
+    ) -> Poll<CargoResult<Rc<Vec<Summary>>>> {
+        let registry_cache_key = (dep.clone(), first_version);
+        if let Some(out) = self.registry_cache.get(&registry_cache_key).cloned() {
             return out.map(Result::Ok);
         }
 
         let mut ret = Vec::new();
         let ready = self.registry.query(dep, QueryKind::Exact, &mut |s| {
-            ret.push(s);
+            ret.push(s.into_summary());
         })?;
         if ready.is_pending() {
-            self.registry_cache.insert(dep.clone(), Poll::Pending);
+            self.registry_cache
+                .insert((dep.clone(), first_version), Poll::Pending);
             return Poll::Pending;
         }
         for summary in ret.iter() {
             let mut potential_matches = self
                 .replacements
                 .iter()
-                .filter(|&&(ref spec, _)| spec.matches(summary.package_id()));
+                .filter(|(spec, _)| spec.matches(summary.package_id()));
 
-            let &(ref spec, ref dep) = match potential_matches.next() {
-                None => continue,
-                Some(replacement) => replacement,
+            let Some((spec, dep)) = potential_matches.next() else {
+                continue;
             };
             debug!(
                 "found an override for {} {}",
@@ -128,20 +134,24 @@ impl<'a> RegistryQueryer<'a> {
             let mut summaries = match self.registry.query_vec(dep, QueryKind::Exact)? {
                 Poll::Ready(s) => s.into_iter(),
                 Poll::Pending => {
-                    self.registry_cache.insert(dep.clone(), Poll::Pending);
+                    self.registry_cache
+                        .insert((dep.clone(), first_version), Poll::Pending);
                     return Poll::Pending;
                 }
             };
-            let s = summaries.next().ok_or_else(|| {
-                anyhow::format_err!(
-                    "no matching package for override `{}` found\n\
+            let s = summaries
+                .next()
+                .ok_or_else(|| {
+                    anyhow::format_err!(
+                        "no matching package for override `{}` found\n\
                      location searched: {}\n\
                      version required: {}",
-                    spec,
-                    dep.source_id(),
-                    dep.version_req()
-                )
-            })?;
+                        spec,
+                        dep.source_id(),
+                        dep.version_req()
+                    )
+                })?
+                .into_summary();
             let summaries = summaries.collect::<Vec<_>>();
             if !summaries.is_empty() {
                 let bullets = summaries
@@ -157,11 +167,20 @@ impl<'a> RegistryQueryer<'a> {
                 )));
             }
 
-            // The dependency should be hard-coded to have the same name and an
-            // exact version requirement, so both of these assertions should
-            // never fail.
-            assert_eq!(s.version(), summary.version());
-            assert_eq!(s.name(), summary.name());
+            assert_eq!(
+                s.name(),
+                summary.name(),
+                "dependency should be hard coded to have the same name"
+            );
+            if s.version() != summary.version() {
+                return Poll::Ready(Err(anyhow::anyhow!(
+                    "replacement specification `{}` matched {} and tried to override it with {}\n\
+                     avoid matching unrelated packages by being more specific",
+                    spec,
+                    summary.version(),
+                    s.version(),
+                )));
+            }
 
             let replace = if s.source_id() == summary.source_id() {
                 debug!("Preventing\n{:?}\nfrom replacing\n{:?}", summary, s);
@@ -172,7 +191,7 @@ impl<'a> RegistryQueryer<'a> {
             let matched_spec = spec.clone();
 
             // Make sure no duplicates
-            if let Some(&(ref spec, _)) = potential_matches.next() {
+            if let Some((spec, _)) = potential_matches.next() {
                 return Poll::Ready(Err(anyhow::anyhow!(
                     "overlapping replacement specifications found:\n\n  \
                      * {}\n  * {}\n\nboth specifications match: {}",
@@ -190,20 +209,11 @@ impl<'a> RegistryQueryer<'a> {
             }
         }
 
-        // When we attempt versions for a package we'll want to do so in a sorted fashion to pick
-        // the "best candidates" first. VersionPreferences implements this notion.
-        self.version_prefs.sort_summaries(
-            &mut ret,
-            if self.minimal_versions {
-                VersionOrdering::MinimumVersionsFirst
-            } else {
-                VersionOrdering::MaximumVersionsFirst
-            },
-        );
+        self.version_prefs.sort_summaries(&mut ret, first_version);
 
         let out = Poll::Ready(Rc::new(ret));
 
-        self.registry_cache.insert(dep.clone(), out.clone());
+        self.registry_cache.insert(registry_cache_key, out.clone());
 
         out.map(Result::Ok)
     }
@@ -214,10 +224,11 @@ impl<'a> RegistryQueryer<'a> {
     /// next obvious question.
     pub fn build_deps(
         &mut self,
-        cx: &Context,
+        cx: &ResolverContext,
         parent: Option<PackageId>,
         candidate: &Summary,
         opts: &ResolveOpts,
+        first_version: Option<VersionOrdering>,
     ) -> ActivateResult<Rc<(HashSet<InternedString>, Rc<Vec<DepInfo>>)>> {
         // if we have calculated a result before, then we can just return it,
         // as it is a "pure" query of its arguments.
@@ -237,7 +248,7 @@ impl<'a> RegistryQueryer<'a> {
         let mut all_ready = true;
         let mut deps = deps
             .into_iter()
-            .filter_map(|(dep, features)| match self.query(&dep) {
+            .filter_map(|(dep, features)| match self.query(&dep, first_version) {
                 Poll::Ready(Ok(candidates)) => Some(Ok((dep, candidates, features))),
                 Poll::Pending => {
                     all_ready = false;
@@ -259,7 +270,7 @@ impl<'a> RegistryQueryer<'a> {
         // dependencies with more candidates. This way if the dependency with
         // only one candidate can't be resolved we don't have to do a bunch of
         // work before we figure that out.
-        deps.sort_by_key(|&(_, ref a, _)| a.len());
+        deps.sort_by_key(|(_, a, _)| a.len());
 
         let out = Rc::new((used_features, Rc::new(deps)));
 
@@ -338,7 +349,7 @@ fn build_requirements<'a, 'b: 'a>(
 
     let handle_default = |uses_default_features, reqs: &mut Requirements<'_>| {
         if uses_default_features && s.features().contains_key("default") {
-            if let Err(e) = reqs.require_feature(InternedString::new("default")) {
+            if let Err(e) = reqs.require_feature(INTERNED_DEFAULT) {
                 return Err(e.into_activate_error(parent, s));
             }
         }
@@ -441,7 +452,12 @@ impl Requirements<'_> {
                 .iter()
                 .any(|dep| dep.name_in_toml() == package && dep.is_optional())
         {
-            self.require_feature(package)?;
+            // This optional dependency may not have an implicit feature of
+            // the same name if the `dep:` syntax is used to avoid creating
+            // that implicit feature.
+            if self.summary.features().contains_key(&package) {
+                self.require_feature(package)?;
+            }
         }
         self.deps.entry(package).or_default().insert(feat);
         Ok(())
@@ -457,9 +473,8 @@ impl Requirements<'_> {
             return Ok(());
         }
 
-        let fvs = match self.summary.features().get(&feat) {
-            Some(fvs) => fvs,
-            None => return Err(RequirementError::MissingFeature(feat)),
+        let Some(fvs) = self.summary.features().get(&feat) else {
+            return Err(RequirementError::MissingFeature(feat));
         };
 
         for fv in fvs {
@@ -501,26 +516,53 @@ impl RequirementError {
                     .collect();
                 if deps.is_empty() {
                     return match parent {
-                        None => ActivateError::Fatal(anyhow::format_err!(
-                            "Package `{}` does not have the feature `{}`",
-                            summary.package_id(),
-                            feat
-                        )),
-                        Some(p) => ActivateError::Conflict(
-                            p,
-                            ConflictReason::MissingFeatures(feat.to_string()),
-                        ),
+                        None => {
+                            let closest = closest_msg(
+                                &feat.as_str(),
+                                summary.features().keys(),
+                                |key| &key,
+                                "feature",
+                            );
+                            ActivateError::Fatal(anyhow::format_err!(
+                                "Package `{}` does not have the feature `{}`{}",
+                                summary.package_id(),
+                                feat,
+                                closest
+                            ))
+                        }
+                        Some(p) => {
+                            ActivateError::Conflict(p, ConflictReason::MissingFeatures(feat))
+                        }
                     };
                 }
                 if deps.iter().any(|dep| dep.is_optional()) {
                     match parent {
-                        None => ActivateError::Fatal(anyhow::format_err!(
-                            "Package `{}` does not have feature `{}`. It has an optional dependency \
-                             with that name, but that dependency uses the \"dep:\" \
-                             syntax in the features table, so it does not have an implicit feature with that name.",
-                            summary.package_id(),
-                            feat
-                        )),
+                        None => {
+                            let mut features =
+                                features_enabling_dependency_sorted(summary, feat).peekable();
+                            let mut suggestion = String::new();
+                            if features.peek().is_some() {
+                                suggestion = format!(
+                                    "\nDependency `{}` would be enabled by these features:",
+                                    feat
+                                );
+                                for feature in (&mut features).take(3) {
+                                    let _ = write!(&mut suggestion, "\n\t- `{}`", feature);
+                                }
+                                if features.peek().is_some() {
+                                    suggestion.push_str("\n\t  ...");
+                                }
+                            }
+                            ActivateError::Fatal(anyhow::format_err!(
+                                "\
+Package `{}` does not have feature `{}`. It has an optional dependency \
+with that name, but that dependency uses the \"dep:\" \
+syntax in the features table, so it does not have an implicit feature with that name.{}",
+                                summary.package_id(),
+                                feat,
+                                suggestion
+                            ))
+                        }
                         Some(p) => ActivateError::Conflict(
                             p,
                             ConflictReason::NonImplicitDependencyAsFeature(feat),
@@ -532,7 +574,7 @@ impl RequirementError {
                             "Package `{}` does not have feature `{}`. It has a required dependency \
                              with that name, but only optional dependencies can be used as features.",
                             summary.package_id(),
-                            feat
+                            feat,
                         )),
                         Some(p) => ActivateError::Conflict(
                             p,
@@ -550,10 +592,9 @@ impl RequirementError {
                     )),
                     // This code path currently isn't used, since `foo/bar`
                     // and `dep:` syntax is not allowed in a dependency.
-                    Some(p) => ActivateError::Conflict(
-                        p,
-                        ConflictReason::MissingFeatures(dep_name.to_string()),
-                    ),
+                    Some(p) => {
+                        ActivateError::Conflict(p, ConflictReason::MissingFeatures(dep_name))
+                    }
                 }
             }
             RequirementError::Cycle(feat) => ActivateError::Fatal(anyhow::format_err!(
@@ -562,4 +603,33 @@ impl RequirementError {
             )),
         }
     }
+}
+
+/// Collect any features which enable the optional dependency "target_dep".
+///
+/// The returned value will be sorted.
+fn features_enabling_dependency_sorted(
+    summary: &Summary,
+    target_dep: InternedString,
+) -> impl Iterator<Item = InternedString> + '_ {
+    let iter = summary
+        .features()
+        .iter()
+        .filter(move |(_, values)| {
+            for value in *values {
+                match value {
+                    FeatureValue::Dep { dep_name }
+                    | FeatureValue::DepFeature {
+                        dep_name,
+                        weak: false,
+                        ..
+                    } if dep_name == &target_dep => return true,
+                    _ => (),
+                }
+            }
+            false
+        })
+        .map(|(name, _)| *name);
+    // iter is already sorted because it was constructed from a BTreeMap.
+    iter
 }

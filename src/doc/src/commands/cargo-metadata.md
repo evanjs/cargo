@@ -13,15 +13,34 @@ cargo-metadata --- Machine-readable metadata about the current package
 Output JSON to stdout containing information about the workspace members and
 resolved dependencies of the current package.
 
-It is recommended to include the `--format-version` flag to future-proof
-your code to ensure the output is in the format you are expecting.
+The output format is subject to change in future versions of Cargo. It
+is recommended to include the `--format-version` flag to future-proof your code
+and ensure the output is in the format you are expecting. For more on the
+expectations, see ["Compatibility"](#compatibility).
 
 See the [cargo_metadata crate](https://crates.io/crates/cargo_metadata)
 for a Rust API for reading the metadata.
 
 ## OUTPUT FORMAT
 
-The output has the following format:
+### Compatibility
+
+Within the same output format version, the compatibility is maintained, except
+some scenarios. The following is a non-exhaustive list of changes that are not
+considered as incompatible:
+
+* **Adding new fields** — New fields will be added when needed. Reserving this
+  helps Cargo evolve without bumping the format version too often.
+* **Adding new values for enum-like fields** — Same as adding new fields. It
+  keeps metadata evolving without stagnation.
+* **Changing opaque representations** — The inner representations of some
+  fields are implementation details. For example, fields related to
+  "Source ID" are treated as opaque identifiers to differentiate packages or
+  sources. Consumers shouldn't rely on those representations unless specified.
+
+### JSON format
+
+The JSON output has the following format:
 
 ```javascript
 {
@@ -34,22 +53,35 @@ The output has the following format:
             "name": "my-package",
             /* The version of the package. */
             "version": "0.1.0",
-            /* The Package ID, a unique identifier for referring to the package. */
-            "id": "my-package 0.1.0 (path+file:///path/to/my-package)",
+            /* The Package ID for referring to the
+               package within the document and as the `--package` argument to many commands
+            */
+            "id": "file:///path/to/my-package#0.1.0",
             /* The license value from the manifest, or null. */
             "license": "MIT/Apache-2.0",
             /* The license-file value from the manifest, or null. */
             "license_file": "LICENSE",
             /* The description value from the manifest, or null. */
             "description": "Package description.",
-            /* The source ID of the package. This represents where
-               a package is retrieved from.
+            /* The source ID of the package, an "opaque" identifier representing
+               where a package is retrieved from. See "Compatibility" above for
+               the stability guarantee.
+
                This is null for path dependencies and workspace members.
+
                For other dependencies, it is a string with the format:
                - "registry+URL" for registry-based dependencies.
                  Example: "registry+https://github.com/rust-lang/crates.io-index"
                - "git+URL" for git-based dependencies.
                  Example: "git+https://github.com/rust-lang/cargo?rev=5e85ba14aaa20f8133863373404cb0af69eeef2c#5e85ba14aaa20f8133863373404cb0af69eeef2c"
+               - "sparse+URL" for dependencies from a sparse registry
+                 Example: "sparse+https://my-sparse-registry.org"
+
+               The value after the `+` is not explicitly defined, and may change
+               between versions of Cargo and may not directly correlate to other
+               things, such as registry definitions in a config file. New source
+               kinds may be added in the future which will have different `+`
+               prefixed identifiers.
             */
             "source": null,
             /* Array of dependencies declared in the package's manifest. */
@@ -91,7 +123,12 @@ The output has the following format:
                        If not specified or null, the dependency is from the default
                        registry (crates.io).
                     */
-                    "registry": null
+                    "registry": null,
+                    /* (unstable) Boolean flag of whether or not this is a pulbic
+                       dependency. This field is only present when
+                       `-Zpublic-dependency` is enabled.
+                    */
+                    "public": false
                 }
             ],
             /* Array of Cargo targets. */
@@ -119,7 +156,9 @@ The output has the following format:
                     "crate_types": [
                         "bin"
                     ],
-                    /* The name of the target. */
+                    /* The name of the target.
+                       For lib targets, dashes will be replaced with underscores.
+                    */
                     "name": "my-package",
                     /* Absolute path to the root source file of the target. */
                     "src_path": "/path/to/my-package/src/main.rs",
@@ -210,7 +249,13 @@ The output has the following format:
        Each entry is the Package ID for the package.
     */
     "workspace_members": [
-        "my-package 0.1.0 (path+file:///path/to/my-package)",
+        "file:///path/to/my-package#0.1.0",
+    ],
+    /* Array of default members of the workspace.
+       Each entry is the Package ID for the package.
+    */
+    "workspace_default_members": [
+        "file:///path/to/my-package#0.1.0",
     ],
     // The resolved dependency graph for the entire workspace. The enabled
     // features are based on the enabled features for the "current" package.
@@ -228,10 +273,10 @@ The output has the following format:
         "nodes": [
             {
                 /* The Package ID of this node. */
-                "id": "my-package 0.1.0 (path+file:///path/to/my-package)",
+                "id": "file:///path/to/my-package#0.1.0",
                 /* The dependencies of this package, an array of Package IDs. */
                 "dependencies": [
-                    "bitflags 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)"
+                    "https://github.com/rust-lang/crates.io-index#bitflags@1.0.4"
                 ],
                 /* The dependencies of this package. This is an alternative to
                    "dependencies" which contains additional information. In
@@ -245,7 +290,7 @@ The output has the following format:
                         */
                         "name": "bitflags",
                         /* The Package ID of the dependency. */
-                        "pkg": "bitflags 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+                        "pkg": "https://github.com/rust-lang/crates.io-index#bitflags@1.0.4"
                         /* Array of dependency kinds. Added in Cargo 1.40. */
                         "dep_kinds": [
                             {
@@ -271,7 +316,7 @@ The output has the following format:
            This is null if this is a virtual workspace. Otherwise it is
            the Package ID of the root package.
         */
-        "root": "my-package 0.1.0 (path+file:///path/to/my-package)"
+        "root": "file:///path/to/my-package#0.1.0",
     },
     /* The absolute path to the build directory where Cargo places its output. */
     "target_directory": "/path/to/my-package/target",
@@ -293,6 +338,9 @@ The output has the following format:
 }
 ````
 
+Notes:
+- For `"id"` field syntax, see [Package ID Specifications] in the reference.
+
 ## OPTIONS
 
 ### Output Options
@@ -311,7 +359,7 @@ possible value.</dd>
 
 <dt class="option-term" id="option-cargo-metadata---filter-platform"><a class="option-anchor" href="#option-cargo-metadata---filter-platform"></a><code>--filter-platform</code> <em>triple</em></dt>
 <dd class="option-desc">This filters the <code>resolve</code> output to only include dependencies for the
-given <a href="../appendix/glossary.html#target">target triple</a>. 
+given <a href="../appendix/glossary.html#target">target triple</a>.
 Without this flag, the resolve includes all targets.</p>
 <p>Note that the dependencies listed in the “packages” array still includes all
 dependencies. Each package definition is intended to be an unaltered
@@ -348,7 +396,6 @@ be specified multiple times, which enables all specified features.</dd>
 
 </dl>
 
-
 ### Display Options
 
 <dl>
@@ -378,7 +425,6 @@ terminal.</li>
 <p>May also be specified with the <code>term.color</code>
 <a href="../reference/config.html">config value</a>.</dd>
 
-
 </dl>
 
 ### Manifest Options
@@ -389,16 +435,16 @@ terminal.</li>
 <code>Cargo.toml</code> file in the current directory or any parent directory.</dd>
 
 
-
-<dt class="option-term" id="option-cargo-metadata---frozen"><a class="option-anchor" href="#option-cargo-metadata---frozen"></a><code>--frozen</code></dt>
 <dt class="option-term" id="option-cargo-metadata---locked"><a class="option-anchor" href="#option-cargo-metadata---locked"></a><code>--locked</code></dt>
-<dd class="option-desc">Either of these flags requires that the <code>Cargo.lock</code> file is
-up-to-date. If the lock file is missing, or it needs to be updated, Cargo will
-exit with an error. The <code>--frozen</code> flag also prevents Cargo from
-attempting to access the network to determine if it is out-of-date.</p>
-<p>These may be used in environments where you want to assert that the
-<code>Cargo.lock</code> file is up-to-date (such as a CI build) or want to avoid network
-access.</dd>
+<dd class="option-desc">Asserts that the exact same dependencies and versions are used as when the
+existing <code>Cargo.lock</code> file was originally generated. Cargo will exit with an
+error when either of the following scenarios arises:</p>
+<ul>
+<li>The lock file is missing.</li>
+<li>Cargo attempted to change the lock file due to a different dependency resolution.</li>
+</ul>
+<p>It may be used in environments where deterministic builds are desired,
+such as in CI pipelines.</dd>
 
 
 <dt class="option-term" id="option-cargo-metadata---offline"><a class="option-anchor" href="#option-cargo-metadata---offline"></a><code>--offline</code></dt>
@@ -413,6 +459,21 @@ See the <a href="cargo-fetch.html">cargo-fetch(1)</a> command to download depend
 offline.</p>
 <p>May also be specified with the <code>net.offline</code> <a href="../reference/config.html">config value</a>.</dd>
 
+
+<dt class="option-term" id="option-cargo-metadata---frozen"><a class="option-anchor" href="#option-cargo-metadata---frozen"></a><code>--frozen</code></dt>
+<dd class="option-desc">Equivalent to specifying both <code>--locked</code> and <code>--offline</code>.</dd>
+
+
+<dt class="option-term" id="option-cargo-metadata---lockfile-path"><a class="option-anchor" href="#option-cargo-metadata---lockfile-path"></a><code>--lockfile-path</code> <em>PATH</em></dt>
+<dd class="option-desc">Changes the path of the lockfile from the default (<code>&lt;workspace_root&gt;/Cargo.lock</code>) to <em>PATH</em>. <em>PATH</em> must end with
+<code>Cargo.lock</code> (e.g. <code>--lockfile-path /tmp/temporary-lockfile/Cargo.lock</code>). Note that providing
+<code>--lockfile-path</code> will ignore existing lockfile at the default path, and instead will
+either use the lockfile from <em>PATH</em>, or write a new lockfile into the provided <em>PATH</em> if it doesn’t exist.
+This flag can be used to run most commands in read-only directories, writing lockfile into the provided <em>PATH</em>.</p>
+<p>This option is only available on the <a href="https://doc.rust-lang.org/book/appendix-07-nightly-rust.html">nightly
+channel</a> and
+requires the <code>-Z unstable-options</code> flag to enable (see
+<a href="https://github.com/rust-lang/cargo/issues/14421">#14421</a>).</dd>
 
 </dl>
 
@@ -437,7 +498,12 @@ See the <a href="../reference/config.html#command-line-overrides">command-line o
 <dt class="option-term" id="option-cargo-metadata--C"><a class="option-anchor" href="#option-cargo-metadata--C"></a><code>-C</code> <em>PATH</em></dt>
 <dd class="option-desc">Changes the current working directory before executing any specified operations. This affects
 things like where cargo looks by default for the project manifest (<code>Cargo.toml</code>), as well as
-the directories searched for discovering <code>.cargo/config.toml</code>, for example.</dd>
+the directories searched for discovering <code>.cargo/config.toml</code>, for example. This option must
+appear before the command name, for example <code>cargo -C path/to/my-project build</code>.</p>
+<p>This option is only available on the <a href="https://doc.rust-lang.org/book/appendix-07-nightly-rust.html">nightly
+channel</a> and
+requires the <code>-Z unstable-options</code> flag to enable (see
+<a href="https://github.com/rust-lang/cargo/issues/10098">#10098</a>).</dd>
 
 
 <dt class="option-term" id="option-cargo-metadata--h"><a class="option-anchor" href="#option-cargo-metadata--h"></a><code>-h</code></dt>
@@ -451,18 +517,15 @@ the directories searched for discovering <code>.cargo/config.toml</code>, for ex
 
 </dl>
 
-
 ## ENVIRONMENT
 
 See [the reference](../reference/environment-variables.html) for
 details on environment variables that Cargo reads.
 
-
 ## EXIT STATUS
 
 * `0`: Cargo succeeded.
 * `101`: Cargo failed to complete.
-
 
 ## EXAMPLES
 
@@ -471,4 +534,8 @@ details on environment variables that Cargo reads.
        cargo metadata --format-version=1
 
 ## SEE ALSO
-[cargo(1)](cargo.html)
+
+[cargo(1)](cargo.html), [cargo-pkgid(1)](cargo-pkgid.html), [Package ID Specifications], [JSON messages]
+
+[Package ID Specifications]: ../reference/pkgid-spec.html
+[JSON messages]: ../reference/external-tools.html#json-messages

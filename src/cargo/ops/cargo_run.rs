@@ -12,7 +12,7 @@ pub fn run(
     options: &ops::CompileOptions,
     args: &[OsString],
 ) -> CargoResult<()> {
-    let config = ws.config();
+    let gctx = ws.gctx();
 
     if options.filter.contains_glob_patterns() {
         anyhow::bail!("`cargo run` does not support glob patterns on target selection")
@@ -86,16 +86,25 @@ pub fn run(
         path,
         script_meta,
     } = &compile.binaries[0];
-    let exe = match path.strip_prefix(config.cwd()) {
+    let exe = match path.strip_prefix(gctx.cwd()) {
         Ok(path) if path.file_name() == Some(path.as_os_str()) => Path::new(".").join(path),
         Ok(path) => path.to_path_buf(),
         Err(_) => path.to_path_buf(),
     };
     let pkg = bins[0].0;
     let mut process = compile.target_process(exe, unit.kind, pkg, *script_meta)?;
-    process.args(args).cwd(config.cwd());
 
-    config.shell().status("Running", process.to_string())?;
+    // Sets the working directory of the child process to the current working
+    // directory of the parent process.
+    // Overrides the default working directory of the `ProcessBuilder` returned
+    // by `compile.target_process` (the package's root directory)
+    process.args(args).cwd(gctx.cwd());
+
+    if gctx.extra_verbose() {
+        process.display_env_vars();
+    }
+
+    gctx.shell().status("Running", process.to_string())?;
 
     process.exec_replace()
 }

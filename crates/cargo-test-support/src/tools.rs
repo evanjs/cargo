@@ -1,20 +1,22 @@
 //! Common executables that can be reused by various tests.
 
 use crate::{basic_manifest, paths, project, Project};
-use lazy_static::lazy_static;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
-lazy_static! {
-    static ref ECHO_WRAPPER: Mutex<Option<PathBuf>> = Mutex::new(None);
-    static ref ECHO: Mutex<Option<PathBuf>> = Mutex::new(None);
-}
+static ECHO_WRAPPER: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static ECHO: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static CLIPPY_DRIVER: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
 /// Returns the path to an executable that works as a wrapper around rustc.
 ///
 /// The wrapper will echo the command line it was called with to stderr.
 pub fn echo_wrapper() -> PathBuf {
-    let mut lock = ECHO_WRAPPER.lock().unwrap();
+    let mut lock = ECHO_WRAPPER
+        .get_or_init(|| Default::default())
+        .lock()
+        .unwrap();
     if let Some(path) = &*lock {
         return path.clone();
     }
@@ -53,7 +55,7 @@ pub fn echo_wrapper() -> PathBuf {
 ///
 /// Do not expect this to be anything fancy.
 pub fn echo() -> PathBuf {
-    let mut lock = ECHO.lock().unwrap();
+    let mut lock = ECHO.get_or_init(|| Default::default()).lock().unwrap();
     if let Some(path) = &*lock {
         return path.clone();
     }
@@ -105,4 +107,35 @@ pub fn echo_subcommand() -> Project {
         .build();
     p.cargo("build").run();
     p
+}
+
+/// A wrapper around `rustc` instead of calling `clippy`.
+pub fn wrapped_clippy_driver() -> PathBuf {
+    let mut lock = CLIPPY_DRIVER
+        .get_or_init(|| Default::default())
+        .lock()
+        .unwrap();
+    if let Some(path) = &*lock {
+        return path.clone();
+    }
+    let clippy_driver = project()
+        .at(paths::global_root().join("clippy-driver"))
+        .file("Cargo.toml", &basic_manifest("clippy-driver", "0.0.1"))
+        .file(
+            "src/main.rs",
+            r#"
+            fn main() {
+                let mut args = std::env::args_os();
+                let _me = args.next().unwrap();
+                let rustc = args.next().unwrap();
+                let status = std::process::Command::new(rustc).args(args).status().unwrap();
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            "#,
+        )
+        .build();
+    clippy_driver.cargo("build").run();
+    let path = clippy_driver.bin("clippy-driver");
+    *lock = Some(path.clone());
+    path
 }

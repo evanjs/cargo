@@ -2,9 +2,10 @@
 
 use std::fs;
 
-use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::registry::{self, api_path};
+use cargo_test_support::str;
 
 fn setup(name: &str, content: Option<&str>) {
     let dir = api_path().join(format!("api/v1/crates/{}", name));
@@ -49,12 +50,11 @@ fn simple_list() {
 
     p.cargo("owner -l")
         .replace_crates_io(registry.index_url())
-        .with_stdout(
-            "\
+        .with_stdout_data(str![[r#"
 github:rust-lang:core (Core)
 octocat
-",
-        )
+
+"#]])
         .run();
 }
 
@@ -81,13 +81,14 @@ fn simple_add() {
     p.cargo("owner -a username")
         .replace_crates_io(registry.index_url())
         .with_status(101)
-        .with_stderr(
-            "    Updating crates.io index
-error: failed to invite owners to crate `foo` on registry at file://[..]
+        .with_stderr_data(str![[r#"
+[UPDATING] crates.io index
+[ERROR] failed to invite owners to crate `foo` on registry at [ROOTURL]/api
 
 Caused by:
-  EOF while parsing a value at line 1 column 0",
-        )
+  EOF while parsing a value at line 1 column 0
+
+"#]])
         .run();
 }
 
@@ -117,8 +118,8 @@ fn simple_add_with_asymmetric() {
     // The http_api server will check that the authorization is correct.
     // If the authorization was not sent then we would get an unauthorized error.
     p.cargo("owner -a username")
-        .arg("-Zregistry-auth")
-        .masquerade_as_nightly_cargo(&["registry-auth"])
+        .arg("-Zasymmetric-token")
+        .masquerade_as_nightly_cargo(&["asymmetric-token"])
         .replace_crates_io(registry.index_url())
         .with_status(0)
         .run();
@@ -147,14 +148,15 @@ fn simple_remove() {
     p.cargo("owner -r username")
         .replace_crates_io(registry.index_url())
         .with_status(101)
-        .with_stderr(
-            "    Updating crates.io index
-       Owner removing [\"username\"] from crate foo
-error: failed to remove owners from crate `foo` on registry at file://[..]
+        .with_stderr_data(str![[r#"
+[UPDATING] crates.io index
+[OWNER] removing ["username"] from crate foo
+[ERROR] failed to remove owners from crate `foo` on registry at [ROOTURL]/api
 
 Caused by:
-  EOF while parsing a value at line 1 column 0",
-        )
+  EOF while parsing a value at line 1 column 0
+
+"#]])
         .run();
 }
 
@@ -184,9 +186,9 @@ fn simple_remove_with_asymmetric() {
     // The http_api server will check that the authorization is correct.
     // If the authorization was not sent then we would get an unauthorized error.
     p.cargo("owner -r username")
-        .arg("-Zregistry-auth")
+        .arg("-Zasymmetric-token")
         .replace_crates_io(registry.index_url())
-        .masquerade_as_nightly_cargo(&["registry-auth"])
+        .masquerade_as_nightly_cargo(&["asymmetric-token"])
         .with_status(0)
         .run();
 }

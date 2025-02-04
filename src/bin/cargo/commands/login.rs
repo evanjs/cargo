@@ -1,46 +1,49 @@
-use crate::command_prelude::*;
-
 use cargo::ops;
+use cargo::ops::RegistryOrIndex;
+
+use crate::command_prelude::*;
 
 pub fn cli() -> Command {
     subcommand("login")
-        .about(
-            "Save an api token from the registry locally. \
-             If token is not specified, it will be read from stdin.",
-        )
-        .arg_quiet()
-        .arg(Arg::new("token").action(ArgAction::Set))
-        .arg(opt("registry", "Registry to use").value_name("REGISTRY"))
+        .about("Log in to a registry.")
         .arg(
-            flag(
-                "generate-keypair",
-                "Generate a public/secret keypair (unstable)",
-            )
-            .conflicts_with("token"),
+            Arg::new("token")
+                .value_name("TOKEN")
+                .action(ArgAction::Set)
+                .hide(true),
         )
+        .arg_registry("Registry to use")
         .arg(
-            flag("secret-key", "Prompt for secret key (unstable)")
-                .conflicts_with_all(&["generate-keypair", "token"]),
+            Arg::new("args")
+                .help("Additional arguments for the credential provider")
+                .num_args(0..)
+                .last(true),
         )
-        .arg(
-            opt(
-                "key-subject",
-                "Set the key subject for this registry (unstable)",
-            )
-            .value_name("SUBJECT")
-            .conflicts_with("token"),
-        )
-        .after_help("Run `cargo help login` for more detailed information.\n")
+        .arg_silent_suggestion()
+        .after_help(color_print::cstr!(
+            "Run `<cyan,bold>cargo help login</>` for more detailed information.\n"
+        ))
 }
 
-pub fn exec(config: &mut Config, args: &ArgMatches) -> CliResult {
-    ops::registry_login(
-        config,
-        args.get_one::<String>("token").map(|s| s.as_str().into()),
-        args.get_one("registry").map(String::as_str),
-        args.flag("generate-keypair"),
-        args.flag("secret-key"),
-        args.get_one("key-subject").map(String::as_str),
-    )?;
+pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let reg = args.registry_or_index(gctx)?;
+    assert!(
+        !matches!(reg, Some(RegistryOrIndex::Index(..))),
+        "must not be index URL"
+    );
+
+    let token = args.get_one::<String>("token").map(|s| s.as_str().into());
+    if token.is_some() {
+        let _ = gctx
+            .shell()
+            .warn("`cargo login <token>` is deprecated in favor of reading `<token>` from stdin");
+    }
+
+    let extra_args = args
+        .get_many::<String>("args")
+        .unwrap_or_default()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    ops::registry_login(gctx, token, reg.as_ref(), &extra_args)?;
     Ok(())
 }

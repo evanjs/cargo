@@ -1,6 +1,7 @@
 # cargo-add(1)
-{{*set actionverb="Add"}}
-{{*set nouns="adds"}}
+{{~*set command="add"}}
+{{~*set actionverb="Add"}}
+{{~*set nouns="adds"}}
 
 ## NAME
 
@@ -10,7 +11,7 @@ cargo-add --- Add dependencies to a Cargo.toml manifest file
 
 `cargo add` [_options_] _crate_...\
 `cargo add` [_options_] `--path` _path_\
-`cargo add` [_options_] `--git` _url_ [_crate_...]\
+`cargo add` [_options_] `--git` _url_ [_crate_...]
 
 
 ## DESCRIPTION
@@ -34,7 +35,7 @@ When you add a package that is already present, the existing entry will be updat
 Upon successful invocation, the enabled (`+`) and disabled (`-`) [features] of the specified
 dependency will be listed in the command's output.
 
-[features]: ../reference/features.md
+[features]: ../reference/features.html
 
 ## OPTIONS
 
@@ -62,6 +63,12 @@ Specific commit to use when adding from git.
 [Filesystem path](../reference/specifying-dependencies.html#specifying-path-dependencies) to local crate to add.
 {{/option}}
 
+{{#option "`--base` _base_" }}
+The [path base](../reference/unstable.html#path-bases) to use when adding a local crate.
+
+[Unstable (nightly-only)](../reference/unstable.html#path-bases)
+{{/option}}
+
 {{> options-registry }}
 
 {{/options}}
@@ -80,12 +87,11 @@ Add as a [build dependency](../reference/specifying-dependencies.html#build-depe
 
 {{#option "`--target` _target_" }}
 Add as a dependency to the [given target platform](../reference/specifying-dependencies.html#platform-specific-dependencies).
+
+To avoid unexpected shell expansions, you may use quotes around each target, e.g., `--target 'cfg(unix)'`.
 {{/option}}
 
 {{/options}}
-
-
-</dl>
 
 ### Dependency options
 
@@ -107,6 +113,22 @@ Mark the dependency as [optional](../reference/features.html#optional-dependenci
 Mark the dependency as [required](../reference/features.html#optional-dependencies).
 {{/option}}
 
+{{#option "`--public`" }}
+Mark the dependency as public. 
+
+The dependency can be referenced in your library's public API.
+
+[Unstable (nightly-only)](../reference/unstable.html#public-dependency)
+{{/option}}
+
+{{#option "`--no-public`" }}
+Mark the dependency as private. 
+
+While you can use the crate in your implementation, it cannot be referenced in your public API.
+
+[Unstable (nightly-only)](../reference/unstable.html#public-dependency)
+{{/option}}
+
 {{#option "`--no-default-features`" }}
 Disable the [default features](../reference/features.html#dependency-features).
 {{/option}}
@@ -115,7 +137,7 @@ Disable the [default features](../reference/features.html#dependency-features).
 Re-enable the [default features](../reference/features.html#dependency-features).
 {{/option}}
 
-{{#option "`--features` _features_" }}
+{{#option "`-F` _features_" "`--features` _features_" }}
 Space or comma separated list of [features to
 activate](../reference/features.html#dependency-features). When adding multiple
 crates, the features for a specific crate may be enabled with
@@ -141,7 +163,11 @@ which enables all specified features.
 Add dependencies to only the specified package.
 {{/option}}
 
+{{> options-ignore-rust-version }}
+
 {{> options-locked }}
+
+{{> options-lockfile-path }}
 {{/options}}
 
 {{> section-options-common }}
@@ -167,6 +193,10 @@ Add dependencies to only the specified package.
 4. Add support for serializing data structures to json with `derive`s
 
        cargo add serde serde_json -F serde/derive
+
+5. Add `windows` as a platform specific dependency on `cfg(windows)`
+
+       cargo add windows --target 'cfg(windows)'
 
 ## SEE ALSO
 {{man "cargo" 1}}, {{man "cargo-remove" 1}}

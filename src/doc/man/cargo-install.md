@@ -1,6 +1,7 @@
 # cargo-install(1)
-{{*set actionverb="Install"}}
-{{*set temp-target-dir=true}}
+{{~*set command="install"}}
+{{~*set actionverb="Install"}}
+{{~*set temp-target-dir=true}}
 
 ## NAME
 
@@ -18,13 +19,13 @@ cargo-install --- Build and install a Rust binary
 This command manages Cargo's local set of installed binary crates. Only
 packages which have executable `[[bin]]` or `[[example]]` targets can be
 installed, and all executables are installed into the installation root's
-`bin` folder.
+`bin` folder. By default only binaries, not examples, are installed.
 
 {{> description-install-root }}
 
 There are multiple sources from which a crate can be installed. The default
-location is crates.io but the `--git`, `--path`, and `--registry` flags can
-change this source. If the source contains more than one package (such as
+source location is crates.io but the `--git`, `--path`, and `--registry` flags
+can change this source. If the source contains more than one package (such as
 crates.io or a git repository with multiple crates) the _crate_ argument is
 required to indicate which crate should be installed.
 
@@ -55,6 +56,8 @@ specified by setting the `CARGO_TARGET_DIR` environment variable to a relative
 path. In particular, this can be useful for caching build artifacts on
 continuous integration systems.
 
+### Dealing with the Lockfile
+
 By default, the `Cargo.lock` file that is included with the package will be
 ignored. This means that Cargo will recompute which versions of dependencies
 to use, possibly using newer versions that have been released since the
@@ -69,6 +72,16 @@ not start publishing `Cargo.lock` files until version 1.37, which means
 packages published with prior versions will not have a `Cargo.lock` file
 available.
 
+### Configuration Discovery
+
+This command operates on system or user level, not project level.
+This means that the local [configuration discovery] is ignored.
+Instead, the configuration discovery begins at `$CARGO_HOME/config.toml`. 
+If the package is installed with `--path $PATH`, the local configuration 
+will be used, beginning discovery at `$PATH/.cargo/config.toml`.
+
+[configuration discovery]: ../reference/config.html#hierarchical-structure
+
 ## OPTIONS
 
 ### Install Options
@@ -77,7 +90,7 @@ available.
 
 {{#option "`--vers` _version_" "`--version` _version_" }}
 Specify a version to install. This may be a [version
-requirement](../reference/specifying-dependencies.md), like `~1.2`, to have Cargo
+requirement](../reference/specifying-dependencies.html), like `~1.2`, to have Cargo
 select the newest version from the given requirement. If the version does not
 have a requirement operator (such as `^` or `~`), then it must be in the form
 _MAJOR.MINOR.PATCH_, and will install exactly that version; it is *not*
@@ -101,11 +114,15 @@ Specific commit to use when installing from git.
 {{/option}}
 
 {{#option "`--path` _path_" }}
-Filesystem path to local crate to install.
+Filesystem path to local crate to install from.
 {{/option}}
 
 {{#option "`--list`" }}
 List all installed packages and their versions.
+{{/option}}
+
+{{#option "`-n`" "`--dry-run`" }}
+(unstable) Perform all checks without installing.
 {{/option}}
 
 {{#option "`-f`" "`--force`" }}
@@ -129,7 +146,7 @@ Install only the specified binary.
 {{/option}}
 
 {{#option "`--bins`" }}
-Install all binaries.
+Install all binaries. This is the default behavior.
 {{/option}}
 
 {{#option "`--example` _name_..." }}
@@ -161,7 +178,7 @@ Directory to install packages into.
 {{> options-target-dir }}
 
 {{#option "`--debug`" }}
-Build with the `dev` profile instead the `release` profile.
+Build with the `dev` profile instead of the `release` profile.
 See also the `--profile` option for choosing a specific profile by name.
 {{/option}}
 
@@ -174,6 +191,8 @@ See also the `--profile` option for choosing a specific profile by name.
 ### Manifest Options
 
 {{#options}}
+{{> options-ignore-rust-version }}
+
 {{> options-locked }}
 {{/options}}
 

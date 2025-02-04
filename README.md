@@ -9,16 +9,18 @@ Cargo downloads your Rust project’s dependencies and compiles your project.
 [The Cargo Book]: https://doc.rust-lang.org/cargo/
 [Cargo Contributor Guide]: https://rust-lang.github.io/cargo/contrib/
 
+> The Cargo binary distributed through with Rust is maintained by the Cargo
+> team for use by the wider ecosystem.
+> For all other uses of this crate (as a binary or library) this is maintained
+> by the Cargo team, primarily for use by Cargo and not intended for external
+> use (except as a transitive dependency). This crate may make major changes to
+> its APIs.
+
 ## Code Status
 
 [![CI](https://github.com/rust-lang/cargo/actions/workflows/main.yml/badge.svg?branch=auto-cargo)](https://github.com/rust-lang/cargo/actions/workflows/main.yml)
 
-Code documentation: https://docs.rs/cargo/
-
-## Installing Cargo
-
-Cargo is distributed by default with Rust, so if you've got `rustc` installed
-locally you probably also have `cargo` installed locally.
+Code documentation: <https://doc.rust-lang.org/nightly/nightly-rustc/cargo/>
 
 ## Compiling from Source
 
@@ -87,10 +89,10 @@ a list of known community-developed subcommands.
 
 Cargo releases coincide with Rust releases.
 High level release notes are available as part of [Rust's release notes][rel].
-Detailed release notes are available in this repo at [CHANGELOG.md].
+Detailed release notes are available in the [changelog].
 
 [rel]: https://github.com/rust-lang/rust/blob/master/RELEASES.md
-[CHANGELOG.md]: CHANGELOG.md
+[changelog]: https://doc.rust-lang.org/nightly/cargo/CHANGELOG.md
 
 ## Reporting issues
 

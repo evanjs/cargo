@@ -13,15 +13,34 @@ cargo-metadata --- Machine-readable metadata about the current package
 Output JSON to stdout containing information about the workspace members and
 resolved dependencies of the current package.
 
-It is recommended to include the `--format-version` flag to future-proof
-your code to ensure the output is in the format you are expecting.
+The output format is subject to change in future versions of Cargo. It
+is recommended to include the `--format-version` flag to future-proof your code
+and ensure the output is in the format you are expecting. For more on the
+expectations, see ["Compatibility"](#compatibility).
 
 See the [cargo_metadata crate](https://crates.io/crates/cargo_metadata)
 for a Rust API for reading the metadata.
 
 ## OUTPUT FORMAT
 
-The output has the following format:
+### Compatibility
+
+Within the same output format version, the compatibility is maintained, except
+some scenarios. The following is a non-exhaustive list of changes that are not
+considered as incompatible:
+
+* **Adding new fields** — New fields will be added when needed. Reserving this
+  helps Cargo evolve without bumping the format version too often.
+* **Adding new values for enum-like fields** — Same as adding new fields. It
+  keeps metadata evolving without stagnation.
+* **Changing opaque representations** — The inner representations of some
+  fields are implementation details. For example, fields related to
+  "Source ID" are treated as opaque identifiers to differentiate packages or
+  sources. Consumers shouldn't rely on those representations unless specified.
+
+### JSON format
+
+The JSON output has the following format:
 
 ```javascript
 {
@@ -34,22 +53,35 @@ The output has the following format:
             "name": "my-package",
             /* The version of the package. */
             "version": "0.1.0",
-            /* The Package ID, a unique identifier for referring to the package. */
-            "id": "my-package 0.1.0 (path+file:///path/to/my-package)",
+            /* The Package ID for referring to the
+               package within the document and as the `--package` argument to many commands
+            */
+            "id": "file:///path/to/my-package#0.1.0",
             /* The license value from the manifest, or null. */
             "license": "MIT/Apache-2.0",
             /* The license-file value from the manifest, or null. */
             "license_file": "LICENSE",
             /* The description value from the manifest, or null. */
             "description": "Package description.",
-            /* The source ID of the package. This represents where
-               a package is retrieved from.
+            /* The source ID of the package, an "opaque" identifier representing
+               where a package is retrieved from. See "Compatibility" above for
+               the stability guarantee.
+
                This is null for path dependencies and workspace members.
+
                For other dependencies, it is a string with the format:
                - "registry+URL" for registry-based dependencies.
                  Example: "registry+https://github.com/rust-lang/crates.io-index"
                - "git+URL" for git-based dependencies.
                  Example: "git+https://github.com/rust-lang/cargo?rev=5e85ba14aaa20f8133863373404cb0af69eeef2c#5e85ba14aaa20f8133863373404cb0af69eeef2c"
+               - "sparse+URL" for dependencies from a sparse registry
+                 Example: "sparse+https://my-sparse-registry.org"
+
+               The value after the `+` is not explicitly defined, and may change
+               between versions of Cargo and may not directly correlate to other
+               things, such as registry definitions in a config file. New source
+               kinds may be added in the future which will have different `+`
+               prefixed identifiers.
             */
             "source": null,
             /* Array of dependencies declared in the package's manifest. */
@@ -91,7 +123,12 @@ The output has the following format:
                        If not specified or null, the dependency is from the default
                        registry (crates.io).
                     */
-                    "registry": null
+                    "registry": null,
+                    /* (unstable) Boolean flag of whether or not this is a pulbic
+                       dependency. This field is only present when
+                       `-Zpublic-dependency` is enabled.
+                    */
+                    "public": false
                 }
             ],
             /* Array of Cargo targets. */
@@ -119,7 +156,9 @@ The output has the following format:
                     "crate_types": [
                         "bin"
                     ],
-                    /* The name of the target. */
+                    /* The name of the target.
+                       For lib targets, dashes will be replaced with underscores.
+                    */
                     "name": "my-package",
                     /* Absolute path to the root source file of the target. */
                     "src_path": "/path/to/my-package/src/main.rs",
@@ -210,7 +249,13 @@ The output has the following format:
        Each entry is the Package ID for the package.
     */
     "workspace_members": [
-        "my-package 0.1.0 (path+file:///path/to/my-package)",
+        "file:///path/to/my-package#0.1.0",
+    ],
+    /* Array of default members of the workspace.
+       Each entry is the Package ID for the package.
+    */
+    "workspace_default_members": [
+        "file:///path/to/my-package#0.1.0",
     ],
     // The resolved dependency graph for the entire workspace. The enabled
     // features are based on the enabled features for the "current" package.
@@ -228,10 +273,10 @@ The output has the following format:
         "nodes": [
             {
                 /* The Package ID of this node. */
-                "id": "my-package 0.1.0 (path+file:///path/to/my-package)",
+                "id": "file:///path/to/my-package#0.1.0",
                 /* The dependencies of this package, an array of Package IDs. */
                 "dependencies": [
-                    "bitflags 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)"
+                    "https://github.com/rust-lang/crates.io-index#bitflags@1.0.4"
                 ],
                 /* The dependencies of this package. This is an alternative to
                    "dependencies" which contains additional information. In
@@ -245,7 +290,7 @@ The output has the following format:
                         */
                         "name": "bitflags",
                         /* The Package ID of the dependency. */
-                        "pkg": "bitflags 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
+                        "pkg": "https://github.com/rust-lang/crates.io-index#bitflags@1.0.4"
                         /* Array of dependency kinds. Added in Cargo 1.40. */
                         "dep_kinds": [
                             {
@@ -271,7 +316,7 @@ The output has the following format:
            This is null if this is a virtual workspace. Otherwise it is
            the Package ID of the root package.
         */
-        "root": "my-package 0.1.0 (path+file:///path/to/my-package)"
+        "root": "file:///path/to/my-package#0.1.0",
     },
     /* The absolute path to the build directory where Cargo places its output. */
     "target_directory": "/path/to/my-package/target",
@@ -292,6 +337,9 @@ The output has the following format:
     }
 }
 ````
+
+Notes:
+- For `"id"` field syntax, see [Package ID Specifications] in the reference.
 
 ## OPTIONS
 
@@ -335,6 +383,8 @@ reproduction of the information within `Cargo.toml`.
 {{> options-manifest-path }}
 
 {{> options-locked }}
+
+{{> options-lockfile-path }}
 {{/options}}
 
 {{> section-options-common }}
@@ -350,4 +400,8 @@ reproduction of the information within `Cargo.toml`.
        cargo metadata --format-version=1
 
 ## SEE ALSO
-{{man "cargo" 1}}
+
+{{man "cargo" 1}}, {{man "cargo-pkgid" 1}}, [Package ID Specifications], [JSON messages]
+
+[Package ID Specifications]: ../reference/pkgid-spec.html
+[JSON messages]: ../reference/external-tools.html#json-messages

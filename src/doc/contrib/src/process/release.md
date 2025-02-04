@@ -26,7 +26,7 @@ Every night at 00:00 UTC, the artifacts from the most recently merged PR are
 promoted to the nightly release channel. A similar process happens for beta
 and stable releases.
 
-[`dist` bootstrap module]: https://github.com/rust-lang/rust/blob/master/src/bootstrap/dist.rs
+[`dist` bootstrap module]: https://github.com/rust-lang/rust/blob/master/src/bootstrap/src/core/build_steps/dist.rs
 
 ## Submodule updates
 
@@ -46,7 +46,7 @@ subup --up-branch update-cargo \
     --commit-message "Update cargo" \
     --test="src/tools/linkchecker tidy \
         src/tools/cargo \
-        src/tools/rustfmt \
+        src/tools/rustfmt" \
     src/tools/cargo
 ```
 
@@ -59,7 +59,7 @@ subup --up-branch update-beta-cargo \
     --commit-message "[beta] Update cargo" \
     --test="src/tools/linkchecker tidy \
         src/tools/cargo \
-        src/tools/rustfmt \
+        src/tools/rustfmt" \
     rust-1.66.0:src/tools/cargo
 ```
 
@@ -123,15 +123,41 @@ stable) and the release-specific URL such as
 The code that builds the documentation is located in the [`doc` bootstrap
 module].
 
-[`doc` bootstrap module]: https://github.com/rust-lang/rust/blob/master/src/bootstrap/doc.rs
+[`doc` bootstrap module]: https://github.com/rust-lang/rust/blob/master/src/bootstrap/src/core/build_steps/doc.rs
 
 ## crates.io publishing
 
-Cargo's library is published to [crates.io] as part of the stable release
-process. This is handled by the [Release team] as part of their process. There
-is a [`publish.py` script] that in theory should help with this process. The
-test and build tool crates aren't published.
+Cargo's library and its related dependencies (like `cargo-util`) are published
+to [crates.io] as part of the 6-week stable release process by the [Release
+team]. The release process involves a series of steps:
 
+1. The Release team's automation scripts (see <https://github.com/rust-lang/simpleinfra/>) will run [`promote-release`] which will create a tag in the `rust-lang/cargo` repository associated with the version of the cargo submodule for that release.
+2. The creation of a tag will trigger the [release workflow] in `rust-lang/cargo`.
+3. The release workflow will run the [`publish.py` script] on the commit associated with the tag.
+4. The `publish.py` script will run `cargo publish` on any crates that are not already published.
+
+[`promote-release`]: https://github.com/rust-lang/promote-release
+[release workflow]: https://github.com/rust-lang/cargo/blob/master/.github/workflows/release.yml
+
+On very rare cases, the Cargo team may decide to manually publish a new
+release to [crates.io]. For example, this may be necessary if there is a
+problem with the current version that only affects API users, and does not
+affect the `cargo` binary shipped in the stable release. In this situation,
+PRs should be merged to the associated stable release branch in the cargo repo
+(like `rust-1.70.0`) that fix the issue and bump the patch version of the
+affected package. Then you need to work with the Release Team to get a release
+published to crates.io.[^release-problem]
+
+Some packages are not published automatically because they are not part of the
+Rust release train. This currently only includes the [`home`] package. These
+are published manually on an as-needed or as-requested basis by whoever has
+permissions (currently [@ehuss] or the Release/Infra team)[^fix-manual-release].
+
+[^release-problem]: Unfortunately there are some complications with this process. See <https://github.com/rust-lang/cargo/issues/14538> for more detail, and thoughts on how to improve this.
+
+[^fix-manual-release]: This should be fixed, see [crate ownership policy](https://forge.rust-lang.org/policies/crate-ownership.html) about removing ownership. Also see <https://github.com/rust-lang/cargo/issues/14538> for problems with tagging. In general, these should be published from GitHub Actions, but we don't have the infrastructure set up for that, yet.
+
+[`home`]: https://github.com/rust-lang/cargo/tree/master/crates/home
 [`publish.py` script]: https://github.com/rust-lang/cargo/blob/master/publish.py
 
 ## Beta backports
@@ -157,7 +183,7 @@ The process here is similar to the beta-backporting process. The
 [choochoo]: https://doc.rust-lang.org/book/appendix-07-nightly-rust.html
 [rust-lang/rust]: https://github.com/rust-lang/rust/
 [rust-lang/cargo]: https://github.com/rust-lang/cargo/
-[CHANGELOG]: https://github.com/rust-lang/cargo/blob/master/CHANGELOG.md
+[CHANGELOG]: https://github.com/rust-lang/cargo/blob/master/src/doc/src/CHANGELOG.md
 [release process]: https://forge.rust-lang.org/release/process.html
 [`TargetInfo`]: https://github.com/rust-lang/cargo/blob/master/src/cargo/core/compiler/build_context/target_info.rs
 [crates.io]: https://crates.io/

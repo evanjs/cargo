@@ -17,7 +17,7 @@ cargo\-install \[em] Build and install a Rust binary
 This command manages Cargo\[cq]s local set of installed binary crates. Only
 packages which have executable \fB[[bin]]\fR or \fB[[example]]\fR targets can be
 installed, and all executables are installed into the installation root\[cq]s
-\fBbin\fR folder.
+\fBbin\fR folder. By default only binaries, not examples, are installed.
 .sp
 The installation root is determined, in order of precedence:
 .sp
@@ -42,8 +42,8 @@ The installation root is determined, in order of precedence:
 .RE
 .sp
 There are multiple sources from which a crate can be installed. The default
-location is crates.io but the \fB\-\-git\fR, \fB\-\-path\fR, and \fB\-\-registry\fR flags can
-change this source. If the source contains more than one package (such as
+source location is crates.io but the \fB\-\-git\fR, \fB\-\-path\fR, and \fB\-\-registry\fR flags
+can change this source. If the source contains more than one package (such as
 crates.io or a git repository with multiple crates) the \fIcrate\fR argument is
 required to indicate which crate should be installed.
 .sp
@@ -87,7 +87,7 @@ in a temporary target directory. To avoid this, the target directory can be
 specified by setting the \fBCARGO_TARGET_DIR\fR environment variable to a relative
 path. In particular, this can be useful for caching build artifacts on
 continuous integration systems.
-.sp
+.SS "Dealing with the Lockfile"
 By default, the \fBCargo.lock\fR file that is included with the package will be
 ignored. This means that Cargo will recompute which versions of dependencies
 to use, possibly using newer versions that have been released since the
@@ -101,6 +101,12 @@ will not receive any fixes or updates to any dependency. Note that Cargo did
 not start publishing \fBCargo.lock\fR files until version 1.37, which means
 packages published with prior versions will not have a \fBCargo.lock\fR file
 available.
+.SS "Configuration Discovery"
+This command operates on system or user level, not project level.
+This means that the local \fIconfiguration discovery\fR <https://doc.rust\-lang.org/cargo/reference/config.html#hierarchical\-structure> is ignored.
+Instead, the configuration discovery begins at \fB$CARGO_HOME/config.toml\fR\&.
+If the package is installed with \fB\-\-path $PATH\fR, the local configuration
+will be used, beginning discovery at \fB$PATH/.cargo/config.toml\fR\&.
 .SH "OPTIONS"
 .SS "Install Options"
 .sp
@@ -108,7 +114,7 @@ available.
 \fB\-\-version\fR \fIversion\fR
 .RS 4
 Specify a version to install. This may be a \fIversion
-requirement\fR <https://doc.rust\-lang.org/cargo/reference/specifying\-dependencies.md>, like \fB~1.2\fR, to have Cargo
+requirement\fR <https://doc.rust\-lang.org/cargo/reference/specifying\-dependencies.html>, like \fB~1.2\fR, to have Cargo
 select the newest version from the given requirement. If the version does not
 have a requirement operator (such as \fB^\fR or \fB~\fR), then it must be in the form
 \fIMAJOR.MINOR.PATCH\fR, and will install exactly that version; it is \fInot\fR
@@ -137,12 +143,18 @@ Specific commit to use when installing from git.
 .sp
 \fB\-\-path\fR \fIpath\fR
 .RS 4
-Filesystem path to local crate to install.
+Filesystem path to local crate to install from.
 .RE
 .sp
 \fB\-\-list\fR
 .RS 4
 List all installed packages and their versions.
+.RE
+.sp
+\fB\-n\fR, 
+\fB\-\-dry\-run\fR
+.RS 4
+(unstable) Perform all checks without installing.
 .RE
 .sp
 \fB\-f\fR, 
@@ -171,7 +183,7 @@ Install only the specified binary.
 .sp
 \fB\-\-bins\fR
 .RS 4
-Install all binaries.
+Install all binaries. This is the default behavior.
 .RE
 .sp
 \fB\-\-example\fR \fIname\fR\[u2026]
@@ -239,7 +251,7 @@ This may also be specified with the \fBbuild.target\fR
 .sp
 Note that specifying this flag makes Cargo run in a different mode where the
 target artifacts are placed in a separate directory. See the
-\fIbuild cache\fR <https://doc.rust\-lang.org/cargo/guide/build\-cache.html> documentation for more details.
+\fIbuild cache\fR <https://doc.rust\-lang.org/cargo/reference/build\-cache.html> documentation for more details.
 .RE
 .sp
 \fB\-\-target\-dir\fR \fIdirectory\fR
@@ -248,7 +260,7 @@ Directory for all generated artifacts and intermediate files. May also be
 specified with the \fBCARGO_TARGET_DIR\fR environment variable, or the
 \fBbuild.target\-dir\fR \fIconfig value\fR <https://doc.rust\-lang.org/cargo/reference/config.html>\&.
 Defaults to a new temporary folder located in the
-temporary directory of the platform. 
+temporary directory of the platform.
 .sp
 When using \fB\-\-path\fR, by default it will use \fBtarget\fR directory in the workspace
 of the local crate unless \fB\-\-target\-dir\fR
@@ -257,14 +269,14 @@ is specified.
 .sp
 \fB\-\-debug\fR
 .RS 4
-Build with the \fBdev\fR profile instead the \fBrelease\fR profile.
+Build with the \fBdev\fR profile instead of the \fBrelease\fR profile.
 See also the \fB\-\-profile\fR option for choosing a specific profile by name.
 .RE
 .sp
 \fB\-\-profile\fR \fIname\fR
 .RS 4
 Install with the given profile.
-See the \fIthe reference\fR <https://doc.rust\-lang.org/cargo/reference/profiles.html> for more details on profiles.
+See \fIthe reference\fR <https://doc.rust\-lang.org/cargo/reference/profiles.html> for more details on profiles.
 .RE
 .sp
 \fB\-\-timings=\fR\fIfmts\fR
@@ -290,17 +302,27 @@ information about timing information.
 .RE
 .SS "Manifest Options"
 .sp
-\fB\-\-frozen\fR, 
+\fB\-\-ignore\-rust\-version\fR
+.RS 4
+Ignore \fBrust\-version\fR specification in packages.
+.RE
+.sp
 \fB\-\-locked\fR
 .RS 4
-Either of these flags requires that the \fBCargo.lock\fR file is
-up\-to\-date. If the lock file is missing, or it needs to be updated, Cargo will
-exit with an error. The \fB\-\-frozen\fR flag also prevents Cargo from
-attempting to access the network to determine if it is out\-of\-date.
+Asserts that the exact same dependencies and versions are used as when the
+existing \fBCargo.lock\fR file was originally generated. Cargo will exit with an
+error when either of the following scenarios arises:
 .sp
-These may be used in environments where you want to assert that the
-\fBCargo.lock\fR file is up\-to\-date (such as a CI build) or want to avoid network
-access.
+.RS 4
+\h'-04'\(bu\h'+02'The lock file is missing.
+.RE
+.sp
+.RS 4
+\h'-04'\(bu\h'+02'Cargo attempted to change the lock file due to a different dependency resolution.
+.RE
+.sp
+It may be used in environments where deterministic builds are desired,
+such as in CI pipelines.
 .RE
 .sp
 \fB\-\-offline\fR
@@ -318,6 +340,11 @@ offline.
 .sp
 May also be specified with the \fBnet.offline\fR \fIconfig value\fR <https://doc.rust\-lang.org/cargo/reference/config.html>\&.
 .RE
+.sp
+\fB\-\-frozen\fR
+.RS 4
+Equivalent to specifying both \fB\-\-locked\fR and \fB\-\-offline\fR\&.
+.RE
 .SS "Miscellaneous Options"
 .sp
 \fB\-j\fR \fIN\fR, 
@@ -326,15 +353,21 @@ May also be specified with the \fBnet.offline\fR \fIconfig value\fR <https://doc
 Number of parallel jobs to run. May also be specified with the
 \fBbuild.jobs\fR \fIconfig value\fR <https://doc.rust\-lang.org/cargo/reference/config.html>\&. Defaults to
 the number of logical CPUs. If negative, it sets the maximum number of
-parallel jobs to the number of logical CPUs plus provided value.
+parallel jobs to the number of logical CPUs plus provided value. If
+a string \fBdefault\fR is provided, it sets the value back to defaults.
 Should not be 0.
 .RE
 .sp
 \fB\-\-keep\-going\fR
 .RS 4
 Build as many crates in the dependency graph as possible, rather than aborting
-the build on the first one that fails to build. Unstable, requires
-\fB\-Zunstable\-options\fR\&.
+the build on the first one that fails to build.
+.sp
+For example if the current package depends on dependencies \fBfails\fR and \fBworks\fR,
+one of which fails to build, \fBcargo install \-j1\fR may or may not build the
+one that succeeds (depending on which one of the two builds Cargo picked to run
+first), whereas \fBcargo install \-j1 \-\-keep\-going\fR would definitely run both
+builds, even if the one run first fails.
 .RE
 .SS "Display Options"
 .sp
@@ -437,7 +470,13 @@ See the \fIcommand\-line overrides section\fR <https://doc.rust\-lang.org/cargo/
 .RS 4
 Changes the current working directory before executing any specified operations. This affects
 things like where cargo looks by default for the project manifest (\fBCargo.toml\fR), as well as
-the directories searched for discovering \fB\&.cargo/config.toml\fR, for example.
+the directories searched for discovering \fB\&.cargo/config.toml\fR, for example. This option must
+appear before the command name, for example \fBcargo \-C path/to/my\-project build\fR\&.
+.sp
+This option is only available on the \fInightly
+channel\fR <https://doc.rust\-lang.org/book/appendix\-07\-nightly\-rust.html> and
+requires the \fB\-Z unstable\-options\fR flag to enable (see
+\fI#10098\fR <https://github.com/rust\-lang/cargo/issues/10098>).
 .RE
 .sp
 \fB\-h\fR, 

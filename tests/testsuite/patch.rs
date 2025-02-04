@@ -1,10 +1,12 @@
 //! Tests for `[patch]` table source replacement.
 
+use std::fs;
+
 use cargo_test_support::git;
 use cargo_test_support::paths;
+use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{self, Package};
-use cargo_test_support::{basic_manifest, project};
-use std::fs;
+use cargo_test_support::{basic_manifest, project, str};
 
 #[cargo_test]
 fn replace() {
@@ -24,6 +26,7 @@ fn replace() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -49,21 +52,26 @@ fn replace() {
         .file("bar/src/lib.rs", "pub fn bar() {}")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
+[LOCKING] 2 packages to latest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] baz v0.1.0 ([..])
-[COMPILING] bar v0.1.0 ([CWD]/bar)
-[COMPILING] baz v0.1.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] baz v0.1.0 (registry `dummy-registry`)
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] baz v0.1.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -77,6 +85,7 @@ fn from_config() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -95,15 +104,15 @@ fn from_config() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.1 ([..])
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -118,6 +127,7 @@ fn from_config_relative() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -136,15 +146,15 @@ fn from_config_relative() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.1 ([..])
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -159,6 +169,7 @@ fn from_config_precedence() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -180,15 +191,15 @@ fn from_config_precedence() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.1 ([..])
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -203,6 +214,7 @@ fn nonexistent() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -220,17 +232,22 @@ fn nonexistent() {
         .file("bar/src/lib.rs", "pub fn bar() {}")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.0 ([CWD]/bar)
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -248,6 +265,7 @@ fn patch_git() {
                     [package]
                     name = "foo"
                     version = "0.0.1"
+                    edition = "2015"
                     authors = []
 
                     [dependencies]
@@ -267,17 +285,22 @@ fn patch_git() {
         .file("bar/src/lib.rs", "pub fn bar() {}")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[UPDATING] git repository `file://[..]`
-[COMPILING] bar v0.1.0 ([CWD]/bar)
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/override`
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -297,6 +320,7 @@ fn patch_to_git() {
                     [package]
                     name = "foo"
                     version = "0.0.1"
+                    edition = "2015"
                     authors = []
 
                     [dependencies]
@@ -314,18 +338,23 @@ fn patch_to_git() {
         )
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[UPDATING] git repository `file://[..]`
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/override`
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.0 (file://[..])
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.0 ([ROOTURL]/override#[..])
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -339,6 +368,7 @@ fn unused() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -353,34 +383,34 @@ fn unused() {
         .file("bar/src/lib.rs", "not rust code")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[WARNING] Patch `bar v0.2.0 ([CWD]/bar)` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
+[WARNING] Patch `bar v0.2.0 ([ROOT]/foo/bar)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.0 (available: v0.2.0)
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.1.0 [..]
-[COMPILING] bar v0.1.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[CHECKING] bar v0.1.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] Patch `bar v0.2.0 ([CWD]/bar)` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
-[FINISHED] [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[WARNING] Patch `bar v0.2.0 ([ROOT]/foo/bar)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     // unused patch should be in the lock file
@@ -406,6 +436,7 @@ fn unused_with_mismatch_source_being_patched() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -425,26 +456,27 @@ fn unused_with_mismatch_source_being_patched() {
         .file("baz/src/lib.rs", "not rust code")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[WARNING] Patch `bar v0.2.0 ([CWD]/bar)` was not used in the crate graph.
+[WARNING] Patch `bar v0.2.0 ([ROOT]/foo/bar)` was not used in the crate graph.
 Perhaps you misspelled the source URL being patched.
 Possible URLs for `[patch.<URL>]`:
     crates-io
-[WARNING] Patch `bar v0.3.0 ([CWD]/baz)` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
+[WARNING] Patch `bar v0.3.0 ([ROOT]/foo/baz)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.0 (available: v0.3.0)
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.1.0 [..]
-[COMPILING] bar v0.1.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[CHECKING] bar v0.1.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -459,6 +491,7 @@ fn prefer_patch_version() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -473,22 +506,21 @@ fn prefer_patch_version() {
         .file("bar/src/lib.rs", "")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.1 ([CWD]/bar)
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-[FINISHED] [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     // there should be no patch.unused in the toml file
@@ -508,6 +540,7 @@ fn unused_from_config() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -526,34 +559,34 @@ fn unused_from_config() {
         .file("bar/src/lib.rs", "not rust code")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[WARNING] Patch `bar v0.2.0 ([CWD]/bar)` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
+[WARNING] Patch `bar v0.2.0 ([ROOT]/foo/bar)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.0 (available: v0.2.0)
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.1.0 [..]
-[COMPILING] bar v0.1.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[CHECKING] bar v0.1.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] Patch `bar v0.2.0 ([CWD]/bar)` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
-[FINISHED] [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[WARNING] Patch `bar v0.2.0 ([ROOT]/foo/bar)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     // unused patch should be in the lock file
@@ -584,6 +617,7 @@ fn unused_git() {
                     [package]
                     name = "foo"
                     version = "0.0.1"
+                    edition = "2015"
                     authors = []
 
                     [dependencies]
@@ -598,35 +632,35 @@ fn unused_git() {
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[UPDATING] git repository `file://[..]`
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/override`
 [UPDATING] `dummy-registry` index
-[WARNING] Patch `bar v0.2.0 ([..])` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
+[WARNING] Patch `bar v0.2.0 ([ROOTURL]/override#[..])` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.0 (available: v0.2.0)
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.1.0 [..]
-[COMPILING] bar v0.1.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[CHECKING] bar v0.1.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] Patch `bar v0.2.0 ([..])` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
-[FINISHED] [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[WARNING] Patch `bar v0.2.0 ([ROOTURL]/override#[..])` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -641,6 +675,7 @@ fn add_patch() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -652,19 +687,24 @@ fn add_patch() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.1.0 [..]
-[COMPILING] bar v0.1.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[CHECKING] bar v0.1.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 
     p.change_file(
         "Cargo.toml",
@@ -672,6 +712,7 @@ fn add_patch() {
             [package]
             name = "foo"
             version = "0.0.1"
+            edition = "2015"
             authors = []
 
             [dependencies]
@@ -682,16 +723,22 @@ fn add_patch() {
         "#,
     );
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[COMPILING] bar v0.1.0 ([CWD]/bar)
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -705,6 +752,7 @@ fn add_patch_from_config() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -716,19 +764,24 @@ fn add_patch_from_config() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.1.0 [..]
-[COMPILING] bar v0.1.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[CHECKING] bar v0.1.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 
     p.change_file(
         ".cargo/config.toml",
@@ -738,16 +791,22 @@ fn add_patch_from_config() {
         "#,
     );
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[COMPILING] bar v0.1.0 ([CWD]/bar)
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -761,6 +820,7 @@ fn add_ignored_patch() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -772,19 +832,24 @@ fn add_ignored_patch() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.1.0 [..]
-[COMPILING] bar v0.1.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[CHECKING] bar v0.1.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 
     p.change_file(
         "Cargo.toml",
@@ -792,6 +857,7 @@ fn add_ignored_patch() {
             [package]
             name = "foo"
             version = "0.0.1"
+            edition = "2015"
             authors = []
 
             [dependencies]
@@ -802,38 +868,37 @@ fn add_ignored_patch() {
         "#,
     );
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] Patch `bar v0.1.1 ([CWD]/bar)` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[WARNING] Patch `bar v0.1.1 ([ROOT]/foo/bar)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] Patch `bar v0.1.1 ([CWD]/bar)` was not used in the crate graph.
-Check that [..]
-with the [..]
-what is [..]
-version. [..]
-[FINISHED] [..]",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[WARNING] Patch `bar v0.1.1 ([ROOT]/foo/bar)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     p.cargo("update").run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-[COMPILING] bar v0.1.1 ([CWD]/bar)
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -848,6 +913,7 @@ fn add_patch_with_features() {
             [package]
             name = "foo"
             version = "0.0.1"
+            edition = "2015"
             authors = []
 
             [dependencies]
@@ -862,27 +928,20 @@ fn add_patch_with_features() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] patch for `bar` uses the features mechanism. \
-default-features and features will not take effect because the patch dependency does not support this mechanism
+    p.cargo("check").with_stderr_data(str![[r#"
+[WARNING] patch for `bar` uses the features mechanism. default-features and features will not take effect because the patch dependency does not support this mechanism
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.0 ([CWD]/bar)
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
-        .run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] patch for `bar` uses the features mechanism. \
-default-features and features will not take effect because the patch dependency does not support this mechanism
-[FINISHED] [..]
-",
-        )
-        .run();
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]]).run();
+    p.cargo("check").with_stderr_data(str![[r#"
+[WARNING] patch for `bar` uses the features mechanism. default-features and features will not take effect because the patch dependency does not support this mechanism
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]]).run();
 }
 
 #[cargo_test]
@@ -896,6 +955,7 @@ fn add_patch_with_setting_default_features() {
             [package]
             name = "foo"
             version = "0.0.1"
+            edition = "2015"
             authors = []
 
             [dependencies]
@@ -910,27 +970,20 @@ fn add_patch_with_setting_default_features() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] patch for `bar` uses the features mechanism. \
-default-features and features will not take effect because the patch dependency does not support this mechanism
+    p.cargo("check").with_stderr_data(str![[r#"
+[WARNING] patch for `bar` uses the features mechanism. default-features and features will not take effect because the patch dependency does not support this mechanism
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.0 ([CWD]/bar)
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
-        .run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-[WARNING] patch for `bar` uses the features mechanism. \
-default-features and features will not take effect because the patch dependency does not support this mechanism
-[FINISHED] [..]
-",
-        )
-        .run();
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]]).run();
+    p.cargo("check").with_stderr_data(str![[r#"
+[WARNING] patch for `bar` uses the features mechanism. default-features and features will not take effect because the patch dependency does not support this mechanism
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]]).run();
 }
 
 #[cargo_test]
@@ -958,6 +1011,7 @@ fn no_warn_ws_patch() {
                 [package]
                 name = "b"
                 version = "0.1.0"
+                edition = "2015"
                 [dependencies]
                 c = "0.1.0"
             "#,
@@ -967,13 +1021,13 @@ fn no_warn_ws_patch() {
         .file("c/src/lib.rs", "")
         .build();
 
-    p.cargo("build -p a")
-        .with_stderr(
-            "\
-[UPDATING] [..]
-[COMPILING] a [..]
-[FINISHED] [..]",
-        )
+    p.cargo("check -p a")
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[CHECKING] a v0.1.0 ([ROOT]/foo/a)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -988,6 +1042,7 @@ fn new_minor() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1002,15 +1057,15 @@ fn new_minor() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.1 [..]
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1025,6 +1080,7 @@ fn transitive_new_minor() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1041,6 +1097,7 @@ fn transitive_new_minor() {
                 [package]
                 name = "bar"
                 version = "0.1.0"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1052,16 +1109,16 @@ fn transitive_new_minor() {
         .file("baz/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] baz v0.1.1 [..]
-[COMPILING] bar v0.1.0 [..]
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 2 packages to latest compatible versions
+[CHECKING] baz v0.1.1 ([ROOT]/foo/baz)
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1076,6 +1133,7 @@ fn new_major() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1090,21 +1148,24 @@ fn new_major() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.2.0 [..]
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.2.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     Package::new("bar", "0.2.0").publish();
     p.cargo("update").run();
-    p.cargo("build")
-        .with_stderr("[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]")
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     p.change_file(
@@ -1113,23 +1174,25 @@ fn new_major() {
             [package]
             name = "foo"
             version = "0.0.1"
+            edition = "2015"
             authors = []
 
             [dependencies]
             bar = "0.2.0"
         "#,
     );
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.2.0
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.2.0 [..]
-[COMPILING] bar v0.2.0
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[DOWNLOADED] bar v0.2.0 (registry `dummy-registry`)
+[CHECKING] bar v0.2.0
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1144,6 +1207,7 @@ fn transitive_new_major() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1160,6 +1224,7 @@ fn transitive_new_major() {
                 [package]
                 name = "bar"
                 version = "0.1.0"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1171,16 +1236,16 @@ fn transitive_new_major() {
         .file("baz/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] baz v0.2.0 [..]
-[COMPILING] bar v0.1.0 [..]
-[COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 2 packages to latest compatible versions
+[CHECKING] baz v0.2.0 ([ROOT]/foo/baz)
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1201,6 +1266,7 @@ fn shared_by_transitive() {
                     [package]
                     name = "foo"
                     version = " 0.1.0"
+                    edition = "2015"
 
                     [dependencies]
                     bar = {{ path = "bar" }}
@@ -1219,6 +1285,7 @@ fn shared_by_transitive() {
                 [package]
                 name = "bar"
                 version = "0.1.0"
+                edition = "2015"
 
                 [dependencies]
                 baz = "0.1.1"
@@ -1227,17 +1294,17 @@ fn shared_by_transitive() {
         .file("bar/src/lib.rs", "")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[UPDATING] git repository `file://[..]`
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/override`
 [UPDATING] `dummy-registry` index
-[COMPILING] baz v0.1.2 [..]
-[COMPILING] bar v0.1.0 [..]
-[COMPILING] foo v0.1.0 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-",
-        )
+[LOCKING] 2 packages to latest compatible versions
+[CHECKING] baz v0.1.2 ([ROOTURL]/override#[..])
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1253,6 +1320,7 @@ fn remove_patch() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1271,7 +1339,7 @@ fn remove_patch() {
         .build();
 
     // Generate a lock file where `foo` is unused
-    p.cargo("build").run();
+    p.cargo("check").run();
     let lock_file1 = p.read_lockfile();
 
     // Remove `foo` and generate a new lock file form the old one
@@ -1281,6 +1349,7 @@ fn remove_patch() {
             [package]
             name = "foo"
             version = "0.0.1"
+            edition = "2015"
             authors = []
 
             [dependencies]
@@ -1290,12 +1359,12 @@ fn remove_patch() {
             bar = { path = 'bar' }
         "#,
     );
-    p.cargo("build").run();
+    p.cargo("check").run();
     let lock_file2 = p.read_lockfile();
 
     // Remove the lock file and build from scratch
     fs::remove_file(p.root().join("Cargo.lock")).unwrap();
-    p.cargo("build").run();
+    p.cargo("check").run();
     let lock_file3 = p.read_lockfile();
 
     assert!(lock_file1.contains("foo"));
@@ -1314,6 +1383,7 @@ fn non_crates_io() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [patch.some-other-source]
@@ -1325,19 +1395,18 @@ fn non_crates_io() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
+    p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-error: failed to parse manifest at `[..]`
+        .with_stderr_data(str![[r#"
+[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
 
 Caused by:
   [patch] entry `some-other-source` should be a URL or registry name
 
 Caused by:
   invalid url `some-other-source`: relative URL without a base
-",
-        )
+
+"#]])
         .run();
 }
 
@@ -1352,6 +1421,7 @@ fn replace_with_crates_io() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
                 authors = []
 
                 [patch.crates-io]
@@ -1363,18 +1433,16 @@ fn replace_with_crates_io() {
         .file("bar/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build")
+    p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-[UPDATING] [..]
-error: failed to resolve patches for `[..]`
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[ERROR] failed to resolve patches for `https://github.com/rust-lang/crates.io-index`
 
 Caused by:
-  patch for `bar` in `[..]` points to the same source, but patches must point \
-  to different sources
-",
-        )
+  patch for `bar` in `https://github.com/rust-lang/crates.io-index` points to the same source, but patches must point to different sources
+
+"#]])
         .run();
 }
 
@@ -1401,6 +1469,7 @@ fn patch_in_virtual() {
                 [package]
                 name = "foo"
                 version = "0.1.0"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1410,8 +1479,22 @@ fn patch_in_virtual() {
         .file("foo/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build").run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check -p foo")
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+    p.cargo("check -p foo")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -1433,6 +1516,7 @@ fn patch_depends_on_another_patch() {
                 name = "foo"
                 authors = []
                 version = "0.1.0"
+                edition = "2015"
 
                 [dependencies]
                 bar = "0.1"
@@ -1452,6 +1536,7 @@ fn patch_depends_on_another_patch() {
                 [package]
                 name = "baz"
                 version = "0.1.1"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1461,10 +1546,15 @@ fn patch_depends_on_another_patch() {
         .file("baz/src/lib.rs", r#""#)
         .build();
 
-    p.cargo("build").run();
+    p.cargo("check").run();
 
     // Nothing should be rebuilt, no registry should be updated.
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -1487,6 +1577,7 @@ fn replace_prerelease() {
                 [package]
                 name = "bar"
                 version = "0.5.0"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1503,6 +1594,7 @@ fn replace_prerelease() {
                 [package]
                 name = "baz"
                 version = "1.1.0-pre.1"
+                edition = "2015"
                 authors = []
                 [workspace]
             "#,
@@ -1510,7 +1602,7 @@ fn replace_prerelease() {
         .file("baz/src/lib.rs", "pub fn baz() {}")
         .build();
 
-    p.cargo("build").run();
+    p.cargo("check").run();
 }
 
 #[cargo_test]
@@ -1524,6 +1616,7 @@ fn patch_older() {
                 [package]
                 name = "foo"
                 version = "0.1.0"
+                edition = "2015"
 
                 [dependencies]
                 bar = { path = 'bar' }
@@ -1540,6 +1633,7 @@ fn patch_older() {
                 [package]
                 name = "bar"
                 version = "0.5.0"
+                edition = "2015"
                 authors = []
 
                 [dependencies]
@@ -1553,22 +1647,23 @@ fn patch_older() {
                 [package]
                 name = "baz"
                 version = "1.0.1"
+                edition = "2015"
                 authors = []
             "#,
         )
         .file("baz/src/lib.rs", "")
         .build();
 
-    p.cargo("build")
-        .with_stderr(
-            "\
-[UPDATING] [..]
-[COMPILING] baz v1.0.1 [..]
-[COMPILING] bar v0.5.0 [..]
-[COMPILING] foo v0.1.0 [..]
-[FINISHED] [..]
-",
-        )
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[LOCKING] 2 packages to latest compatible versions
+[CHECKING] baz v1.0.1 ([ROOT]/foo/baz)
+[CHECKING] bar v0.5.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1594,6 +1689,7 @@ fn cycle() {
                 [package]
                 name = "a"
                 version = "1.0.0"
+                edition = "2015"
 
                 [dependencies]
                 b = "1.0"
@@ -1606,6 +1702,7 @@ fn cycle() {
                 [package]
                 name = "b"
                 version = "1.0.0"
+                edition = "2015"
 
                 [dependencies]
                 a = "1.0"
@@ -1616,15 +1713,14 @@ fn cycle() {
 
     p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-[UPDATING] [..]
-[ERROR] cyclic package dependency: [..]
-package `[..]`
-    ... which satisfies dependency `[..]` of package `[..]`
-    ... which satisfies dependency `[..]` of package `[..]`
-",
-        )
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[ERROR] cyclic package dependency: package `a v1.0.0 ([ROOT]/foo/a)` depends on itself. Cycle:
+package `a v1.0.0 ([ROOT]/foo/a)`
+    ... which satisfies dependency `a = "^1.0"` of package `b v1.0.0 ([ROOT]/foo/b)`
+    ... which satisfies dependency `b = "^1.0"` of package `a v1.0.0 ([ROOT]/foo/a)`
+
+"#]])
         .run();
 }
 
@@ -1639,6 +1735,7 @@ fn multipatch() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
 
                 [dependencies]
                 a1 = { version = "1", package = "a" }
@@ -1656,6 +1753,7 @@ fn multipatch() {
                 [package]
                 name = "a"
                 version = "1.0.0"
+                edition = "2015"
             "#,
         )
         .file("a1/src/lib.rs", "pub fn f1() {}")
@@ -1665,12 +1763,13 @@ fn multipatch() {
                 [package]
                 name = "a"
                 version = "2.0.0"
+                edition = "2015"
             "#,
         )
         .file("a2/src/lib.rs", "pub fn f2() {}")
         .build();
 
-    p.cargo("build").run();
+    p.cargo("check").run();
 }
 
 #[cargo_test]
@@ -1690,6 +1789,7 @@ fn patch_same_version() {
                     [package]
                     name = "foo"
                     version = "0.0.1"
+                    edition = "2015"
                     [dependencies]
                     bar = "0.1"
                     [patch.crates-io]
@@ -1706,19 +1806,19 @@ fn patch_same_version() {
                 [package]
                 name = "bar"
                 version = "0.1.0"
+                edition = "2015"
             "#,
         )
         .file("bar/src/lib.rs", "")
         .build();
 
-    p.cargo("build")
+    p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-[UPDATING] [..]
-error: cannot have two `[patch]` entries which both resolve to `bar v0.1.0`
-",
-        )
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `[ROOTURL]/override`
+[ERROR] cannot have two `[patch]` entries which both resolve to `bar v0.1.0`
+
+"#]])
         .run();
 }
 
@@ -1739,6 +1839,7 @@ fn two_semver_compatible() {
                     [package]
                     name = "foo"
                     version = "0.0.1"
+                    edition = "2015"
                     [dependencies]
                     bar = "0.1"
                     [patch.crates-io]
@@ -1755,6 +1856,7 @@ fn two_semver_compatible() {
                 [package]
                 name = "bar"
                 version = "0.1.2"
+                edition = "2015"
             "#,
         )
         .file("bar/src/lib.rs", "pub fn foo() {}")
@@ -1763,16 +1865,16 @@ fn two_semver_compatible() {
     // assert the build succeeds and doesn't panic anywhere, and then afterwards
     // assert that the build succeeds again without updating anything or
     // building anything else.
-    p.cargo("build").run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-warning: Patch `bar v0.1.1 [..]` was not used in the crate graph.
+    p.cargo("check").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[WARNING] Patch `bar v0.1.1 ([ROOTURL]/override#[..])` was not used in the crate graph.
 Perhaps you misspelled the source URL being patched.
 Possible URLs for `[patch.<URL>]`:
-    [CWD]/bar
-[FINISHED] [..]",
-        )
+    [ROOT]/foo/bar
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1793,6 +1895,7 @@ fn multipatch_select_big() {
                     [package]
                     name = "foo"
                     version = "0.0.1"
+                    edition = "2015"
                     [dependencies]
                     bar = "*"
                     [patch.crates-io]
@@ -1809,6 +1912,7 @@ fn multipatch_select_big() {
                 [package]
                 name = "bar"
                 version = "0.2.0"
+                edition = "2015"
             "#,
         )
         .file("bar/src/lib.rs", "pub fn foo() {}")
@@ -1817,16 +1921,16 @@ fn multipatch_select_big() {
     // assert the build succeeds, which is only possible if 0.2.0 is selected
     // since 0.1.0 is missing the function we need. Afterwards assert that the
     // build succeeds again without updating anything or building anything else.
-    p.cargo("build").run();
-    p.cargo("build")
-        .with_stderr(
-            "\
-warning: Patch `bar v0.1.0 [..]` was not used in the crate graph.
+    p.cargo("check").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[WARNING] Patch `bar v0.1.0 ([ROOTURL]/override#[..])` was not used in the crate graph.
 Perhaps you misspelled the source URL being patched.
 Possible URLs for `[patch.<URL>]`:
-    [CWD]/bar
-[FINISHED] [..]",
-        )
+    [ROOT]/foo/bar
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -1845,6 +1949,7 @@ fn canonicalize_a_bunch() {
                     [package]
                     name = "intermediate"
                     version = "0.1.0"
+                    edition = "2015"
 
                     [dependencies]
                     # Note the lack of trailing slash
@@ -1869,6 +1974,7 @@ fn canonicalize_a_bunch() {
                     [package]
                     name = "foo"
                     version = "0.0.1"
+                    edition = "2015"
 
                     [dependencies]
                     # Note the trailing slashes
@@ -1887,12 +1993,22 @@ fn canonicalize_a_bunch() {
         .build();
 
     // Once to make sure it actually works
-    p.cargo("build").run();
+    p.cargo("check").run();
 
     // Then a few more times for good measure to ensure no weird warnings about
     // `[patch]` are printed.
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -1910,6 +2026,7 @@ fn update_unused_new_version() {
                 [package]
                 name = "foo"
                 version = "0.0.1"
+                edition = "2015"
 
                 [dependencies]
                 bar = "0.1.5"
@@ -1928,8 +2045,12 @@ fn update_unused_new_version() {
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("build")
-        .with_stderr_contains("[WARNING] Patch `bar v0.1.4 [..] was not used in the crate graph.")
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[WARNING] Patch `bar v0.1.4 ([ROOT]/bar)` was not used in the crate graph.
+...
+"#]])
         .run();
     // unused patch should be in the lock file
     let lock = p.read_lockfile();
@@ -1948,44 +2069,50 @@ fn update_unused_new_version() {
     fs::copy(p.root().join("Cargo.lock"), p.root().join("Cargo.lock.bak")).unwrap();
 
     // Try to build again, this should automatically update Cargo.lock.
-    p.cargo("build")
-        .with_stderr(
-            "\
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[COMPILING] bar v0.1.6 ([..]/bar)
-[COMPILING] foo v0.0.1 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.6 ([ROOT]/bar)
+[CHECKING] bar v0.1.6 ([ROOT]/bar)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
     // This should not update any registry.
-    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
     assert!(!p.read_lockfile().contains("unused"));
 
     // Restore the lock file, and see if `update` will work, too.
     fs::copy(p.root().join("Cargo.lock.bak"), p.root().join("Cargo.lock")).unwrap();
 
-    // Try `update -p`.
-    p.cargo("update -p bar")
-        .with_stderr(
-            "\
+    // Try `update <pkg>`.
+    p.cargo("update bar")
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[ADDING] bar v0.1.6 ([..]/bar)
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.6 ([ROOT]/bar)
 [REMOVING] bar v0.1.5
-",
-        )
+
+"#]])
         .run();
 
     // Try with bare `cargo update`.
     fs::copy(p.root().join("Cargo.lock.bak"), p.root().join("Cargo.lock")).unwrap();
     p.cargo("update")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[ADDING] bar v0.1.6 ([..]/bar)
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.6 ([ROOT]/bar)
 [REMOVING] bar v0.1.5
-",
-        )
+
+"#]])
         .run();
 }
 
@@ -2004,6 +2131,7 @@ fn too_many_matches() {
                 [package]
                 name = "foo"
                 version = "0.1.0"
+                edition = "2015"
 
                 [dependencies]
                 bar = "0.1"
@@ -2018,8 +2146,7 @@ fn too_many_matches() {
     // Picks 0.1.1, the most recent version.
     p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `alternative` index
 [ERROR] failed to resolve patches for `https://github.com/rust-lang/crates.io-index`
 
@@ -2030,9 +2157,9 @@ Caused by:
   patch for `bar` in `registry `alternative`` resolved to more than one candidate
   Found versions: 0.1.0, 0.1.1
   Update the patch definition to select only one package.
-  For example, add an `=` version requirement to the patch definition, such as `version = \"=0.1.1\"`.
-",
-        )
+  For example, add an `=` version requirement to the patch definition, such as `version = "=0.1.1"`.
+
+"#]])
         .run();
 }
 
@@ -2046,6 +2173,7 @@ fn no_matches() {
                  [package]
                  name = "foo"
                  version = "0.1.0"
+                 edition = "2015"
 
                  [dependencies]
                  bar = "0.1"
@@ -2061,17 +2189,16 @@ fn no_matches() {
 
     p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-error: failed to resolve patches for `https://github.com/rust-lang/crates.io-index`
+        .with_stderr_data(str![[r#"
+[ERROR] failed to resolve patches for `https://github.com/rust-lang/crates.io-index`
 
 Caused by:
   patch for `bar` in `https://github.com/rust-lang/crates.io-index` failed to resolve
 
 Caused by:
-  The patch location `[..]/foo/bar` does not appear to contain any packages matching the name `bar`.
-",
-        )
+  The patch location `[ROOT]/foo/bar` does not appear to contain any packages matching the name `bar`.
+
+"#]])
         .run();
 }
 
@@ -2085,6 +2212,7 @@ fn mismatched_version() {
                  [package]
                  name = "foo"
                  version = "0.1.0"
+                 edition = "2015"
 
                  [dependencies]
                  bar = "0.1.1"
@@ -2100,20 +2228,17 @@ fn mismatched_version() {
 
     p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [ERROR] failed to resolve patches for `https://github.com/rust-lang/crates.io-index`
 
 Caused by:
   patch for `bar` in `https://github.com/rust-lang/crates.io-index` failed to resolve
 
 Caused by:
-  The patch location `[..]/foo/bar` contains a `bar` package with version `0.1.0`, \
-  but the patch definition requires `^0.1.1`.
-  Check that the version in the patch location is what you expect, \
-  and update the patch definition to match.
-",
-        )
+  The patch location `[ROOT]/foo/bar` contains a `bar` package with version `0.1.0`, but the patch definition requires `^0.1.1`.
+  Check that the version in the patch location is what you expect, and update the patch definition to match.
+
+"#]])
         .run();
 }
 
@@ -2129,6 +2254,7 @@ fn patch_walks_backwards() {
             [package]
             name = "foo"
             version = "0.1.0"
+            edition = "2015"
 
             [dependencies]
             bar = "0.1"
@@ -2143,28 +2269,29 @@ fn patch_walks_backwards() {
         .build();
 
     p.cargo("check")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[CHECKING] bar v0.1.1 ([..]/foo/bar)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     // Somehow the user changes the version backwards.
     p.change_file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"));
 
     p.cargo("check")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[CHECKING] bar v0.1.0 ([..]/foo/bar)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[DOWNGRADING] bar v0.1.1 ([ROOT]/foo/bar) -> v0.1.0
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -2181,6 +2308,7 @@ fn patch_walks_backwards_restricted() {
             [package]
             name = "foo"
             version = "0.1.0"
+            edition = "2015"
 
             [dependencies]
             bar = "0.1"
@@ -2195,14 +2323,14 @@ fn patch_walks_backwards_restricted() {
         .build();
 
     p.cargo("check")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[CHECKING] bar v0.1.1 ([..]/foo/bar)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     // Somehow the user changes the version backwards.
@@ -2210,18 +2338,17 @@ fn patch_walks_backwards_restricted() {
 
     p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-error: failed to resolve patches for `https://github.com/rust-lang/crates.io-index`
+        .with_stderr_data(str![[r#"
+[ERROR] failed to resolve patches for `https://github.com/rust-lang/crates.io-index`
 
 Caused by:
   patch for `bar` in `https://github.com/rust-lang/crates.io-index` failed to resolve
 
 Caused by:
-  The patch location `[..]/foo/bar` contains a `bar` package with version `0.1.0`, but the patch definition requires `^0.1.1`.
+  The patch location `[ROOT]/foo/bar` contains a `bar` package with version `0.1.0`, but the patch definition requires `^0.1.1`.
   Check that the version in the patch location is what you expect, and update the patch definition to match.
-",
-        )
+
+"#]])
         .run();
 }
 
@@ -2240,6 +2367,7 @@ fn patched_dep_new_version() {
             [package]
             name = "foo"
             version = "0.1.0"
+            edition = "2015"
 
             [dependencies]
             bar = "0.1"
@@ -2255,6 +2383,7 @@ fn patched_dep_new_version() {
             [package]
             name = "bar"
             version = "0.1.0"
+            edition = "2015"
 
             [dependencies]
             baz = "0.1"
@@ -2265,23 +2394,28 @@ fn patched_dep_new_version() {
 
     // Lock everything.
     p.cargo("check")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
+[LOCKING] 2 packages to latest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] baz v0.1.0 [..]
+[DOWNLOADED] baz v0.1.0 (registry `dummy-registry`)
 [CHECKING] baz v0.1.0
-[CHECKING] bar v0.1.0 ([..]/foo/bar)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     Package::new("baz", "0.1.1").publish();
 
     // Just the presence of the new version should not have changed anything.
-    p.cargo("check").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 
     // Modify the patch so it requires the new version.
     p.change_file(
@@ -2290,6 +2424,7 @@ fn patched_dep_new_version() {
             [package]
             name = "bar"
             version = "0.1.0"
+            edition = "2015"
 
             [dependencies]
             baz = "0.1.1"
@@ -2298,17 +2433,18 @@ fn patched_dep_new_version() {
 
     // Should unlock and update cleanly.
     p.cargo("check")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
+[UPDATING] baz v0.1.0 -> v0.1.1
 [DOWNLOADING] crates ...
 [DOWNLOADED] baz v0.1.1 (registry `dummy-registry`)
 [CHECKING] baz v0.1.1
-[CHECKING] bar v0.1.0 ([..]/foo/bar)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -2327,6 +2463,7 @@ fn patch_update_doesnt_update_other_sources() {
             [package]
             name = "foo"
             version = "0.1.0"
+            edition = "2015"
 
             [dependencies]
             bar = "0.1"
@@ -2342,17 +2479,20 @@ fn patch_update_doesnt_update_other_sources() {
         .build();
 
     p.cargo("check")
-        .with_stderr_unordered(
-            "\
+        .with_stderr_data(
+            str![[r#"
 [UPDATING] `dummy-registry` index
 [UPDATING] `alternative` index
+[LOCKING] 2 packages to latest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.0 (registry `alternative`)
+[CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [CHECKING] bar v0.1.0 (registry `alternative`)
-[CHECKING] bar v0.1.0 ([..]/foo/bar)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]]
+            .unordered(),
         )
         .run();
 
@@ -2361,21 +2501,27 @@ fn patch_update_doesnt_update_other_sources() {
     Package::new("bar", "0.1.1").alternative(true).publish();
 
     // Since it is locked, nothing should change.
-    p.cargo("check").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 
     // Require new version on crates.io.
     p.change_file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"));
 
     // This should not update bar_alt.
     p.cargo("check")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[CHECKING] bar v0.1.1 ([..]/foo/bar)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[LOCKING] 1 package to latest compatible version
+[UPDATING] bar v0.1.0 ([ROOT]/foo/bar) -> v0.1.1
+[CHECKING] bar v0.1.1 ([ROOT]/foo/bar)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
@@ -2394,6 +2540,7 @@ fn can_update_with_alt_reg() {
                 [package]
                 name = "foo"
                 version = "0.1.0"
+                edition = "2015"
 
                 [dependencies]
                 bar = "0.1"
@@ -2406,32 +2553,38 @@ fn can_update_with_alt_reg() {
         .build();
 
     p.cargo("check")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `alternative` index
 [UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.1 (registry `alternative`)
 [CHECKING] bar v0.1.1 (registry `alternative`)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 
     Package::new("bar", "0.1.2").alternative(true).publish();
 
     // Should remain locked.
-    p.cargo("check").with_stderr("[FINISHED] [..]").run();
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
 
     // This does nothing, due to `=` requirement.
-    p.cargo("update -p bar")
-        .with_stderr(
-            "\
+    p.cargo("update bar")
+        .with_stderr_data(str![[r#"
 [UPDATING] `alternative` index
 [UPDATING] `dummy-registry` index
-",
-        )
+[LOCKING] 0 packages to latest compatible versions
+[NOTE] pass `--verbose` to see 1 unchanged dependencies behind latest
+
+"#]])
         .run();
 
     // Bump to 0.1.2.
@@ -2441,6 +2594,7 @@ fn can_update_with_alt_reg() {
             [package]
             name = "foo"
             version = "0.1.0"
+            edition = "2015"
 
             [dependencies]
             bar = "0.1"
@@ -2451,22 +2605,27 @@ fn can_update_with_alt_reg() {
     );
 
     p.cargo("check")
-        .with_stderr(
-            "\
+        .with_stderr_data(str![[r#"
 [UPDATING] `alternative` index
 [UPDATING] `dummy-registry` index
+[LOCKING] 1 package to latest compatible version
+[UPDATING] bar v0.1.1 (registry `alternative`) -> v0.1.2
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.2 (registry `alternative`)
 [CHECKING] bar v0.1.2 (registry `alternative`)
-[CHECKING] foo v0.1.0 ([..]/foo)
-[FINISHED] [..]
-",
-        )
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
         .run();
 }
 
 #[cargo_test]
-fn old_git_patch() {
+fn gitoxide_clones_shallow_old_git_patch() {
+    perform_old_git_patch(true)
+}
+
+fn perform_old_git_patch(shallow: bool) {
     // Example where an old lockfile with an explicit branch="master" in Cargo.toml.
     Package::new("bar", "1.0.0").publish();
     let (bar, bar_repo) = git::new_repo("bar", |p| {
@@ -2484,6 +2643,7 @@ fn old_git_patch() {
                     [package]
                     name = "foo"
                     version = "0.1.0"
+                    edition = "2015"
 
                     [dependencies]
                     bar = "1.0"
@@ -2524,20 +2684,464 @@ dependencies = [
     git::commit(&bar_repo);
 
     // This *should* keep the old lock.
-    p.cargo("tree")
+    let mut cargo = p.cargo("tree");
+    if shallow {
+        cargo
+            .arg("-Zgitoxide=fetch")
+            .arg("-Zgit=shallow-deps")
+            .masquerade_as_nightly_cargo(&[
+                "unstable features must be available for -Z gitoxide and -Z git",
+            ]);
+    }
+    cargo
         // .env("CARGO_LOG", "trace")
-        .with_stderr(
+        .with_stderr_data(
             "\
-[UPDATING] [..]
+[UPDATING] git repository `[ROOTURL]/bar`
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v1.0.0 ([ROOTURL]/bar?branch=master#[..])
 ",
         )
         // .with_status(1)
-        .with_stdout(format!(
+        .with_stdout_data(format!(
             "\
-foo v0.1.0 [..]
-└── bar v1.0.0 (file:///[..]branch=master#{})
+foo v0.1.0 ([ROOT]/foo)
+└── bar v1.0.0 ([ROOTURL]/bar?branch=master#{})
 ",
             &bar_oid.to_string()[..8]
         ))
+        .run();
+}
+
+#[cargo_test]
+fn old_git_patch() {
+    perform_old_git_patch(false)
+}
+
+// From https://github.com/rust-lang/cargo/issues/7463
+#[cargo_test]
+fn patch_eq_conflict_panic() {
+    Package::new("bar", "0.1.0").publish();
+    Package::new("bar", "0.1.1").publish();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+
+                [dependencies]
+                bar = "=0.1.0"
+
+                [dev-dependencies]
+                bar = "=0.1.1"
+
+                [patch.crates-io]
+                bar = {path="bar"}
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("generate-lockfile")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[ERROR] failed to select a version for `bar`.
+    ... required by package `foo v0.1.0 ([ROOT]/foo)`
+versions that meet the requirements `=0.1.1` are: 0.1.1
+
+all possible versions conflict with previously selected packages.
+
+  previously selected package `bar v0.1.0`
+    ... which satisfies dependency `bar = "=0.1.0"` of package `foo v0.1.0 ([ROOT]/foo)`
+
+failed to select a version for `bar` which could resolve this conflict
+
+"#]])
+        .run();
+}
+
+// From https://github.com/rust-lang/cargo/issues/11336
+#[cargo_test]
+fn mismatched_version2() {
+    Package::new("qux", "0.1.0-beta.1").publish();
+    Package::new("qux", "0.1.0-beta.2").publish();
+    Package::new("bar", "0.1.0")
+        .dep("qux", "=0.1.0-beta.1")
+        .publish();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                 [package]
+                 name = "foo"
+                 version = "0.1.0"
+                 edition = "2015"
+
+                 [dependencies]
+                 bar = "0.1.0"
+                 qux = "0.1.0-beta.2"
+
+                 [patch.crates-io]
+                 qux = { path = "qux" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "qux/Cargo.toml",
+            r#"
+                [package]
+                name = "qux"
+                version = "0.1.0-beta.1"
+                edition = "2015"
+            "#,
+        )
+        .file("qux/src/lib.rs", "")
+        .build();
+
+    p.cargo("generate-lockfile")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[ERROR] failed to select a version for `qux`.
+    ... required by package `bar v0.1.0`
+    ... which satisfies dependency `bar = "^0.1.0"` of package `foo v0.1.0 ([ROOT]/foo)`
+versions that meet the requirements `=0.1.0-beta.1` are: 0.1.0-beta.1
+
+all possible versions conflict with previously selected packages.
+
+  previously selected package `qux v0.1.0-beta.2`
+    ... which satisfies dependency `qux = "^0.1.0-beta.2"` of package `foo v0.1.0 ([ROOT]/foo)`
+
+failed to select a version for `qux` which could resolve this conflict
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn mismatched_version_with_prerelease() {
+    Package::new("prerelease-deps", "0.0.1").publish();
+    // A patch to a location that has an prerelease version
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                 [package]
+                 name = "foo"
+                 version = "0.1.0"
+                 edition = "2015"
+
+                 [dependencies]
+                 prerelease-deps = "0.1.0"
+
+                 [patch.crates-io]
+                 prerelease-deps = { path = "./prerelease-deps" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "prerelease-deps/Cargo.toml",
+            &basic_manifest("prerelease-deps", "0.1.1-pre1"),
+        )
+        .file("prerelease-deps/src/lib.rs", "")
+        .build();
+
+    p.cargo("generate-lockfile")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[ERROR] failed to select a version for the requirement `prerelease-deps = "^0.1.0"`
+candidate versions found which didn't match: 0.1.1-pre1, 0.0.1
+location searched: `dummy-registry` index (which is replacing registry `crates-io`)
+required by package `foo v0.1.0 ([ROOT]/foo)`
+if you are looking for the prerelease package it needs to be specified explicitly
+    prerelease-deps = { version = "0.1.1-pre1" }
+perhaps a crate was updated and forgotten to be re-vendored?
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn from_config_empty() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            r#"
+                [patch.'']
+                bar = { path = 'bar' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] [patch] entry `` should be a URL or registry name
+
+Caused by:
+  invalid url ``: relative URL without a base
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn from_manifest_empty() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+
+                [patch.'']
+                bar = { path = 'bar' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
+
+Caused by:
+  [patch] entry `` should be a URL or registry name
+
+Caused by:
+  invalid url ``: relative URL without a base
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn patched_reexport_stays_locked() {
+    // Patch example where you emulate a semver-incompatible patch via a re-export.
+    // Testing an issue where the lockfile does not stay locked after a new version is published.
+    Package::new("bar", "1.0.0").publish();
+    Package::new("bar", "2.0.0").publish();
+    Package::new("bar", "3.0.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+
+
+                [package]
+                name = "foo"
+
+                [dependencies]
+                bar1 = {package="bar", version="1.0.0"}
+                bar2 = {package="bar", version="2.0.0"}
+
+                [patch.crates-io]
+                bar1 = { package = "bar", path = "bar-1-as-3" }
+                bar2 = { package = "bar", path = "bar-2-as-3" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "bar-1-as-3/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "1.0.999"
+
+                [dependencies]
+                bar = "3.0.0"
+            "#,
+        )
+        .file("bar-1-as-3/src/lib.rs", "")
+        .file(
+            "bar-2-as-3/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "2.0.999"
+
+                [dependencies]
+                bar = "3.0.0"
+            "#,
+        )
+        .file("bar-2-as-3/src/lib.rs", "")
+        .build();
+
+    p.cargo("tree")
+        .with_stdout_data(str![[r#"
+foo v0.0.0 ([ROOT]/foo)
+├── bar v1.0.999 ([ROOT]/foo/bar-1-as-3)
+│   └── bar v3.0.0
+└── bar v2.0.999 ([ROOT]/foo/bar-2-as-3)
+    └── bar v3.0.0
+
+"#]])
+        .run();
+
+    std::fs::copy(
+        p.root().join("Cargo.lock"),
+        p.root().join("Cargo.lock.orig"),
+    )
+    .unwrap();
+
+    Package::new("bar", "3.0.1").publish();
+    p.cargo("tree")
+        .with_stdout_data(str![[r#"
+foo v0.0.0 ([ROOT]/foo)
+├── bar v1.0.999 ([ROOT]/foo/bar-1-as-3)
+│   └── bar v3.0.0
+└── bar v2.0.999 ([ROOT]/foo/bar-2-as-3)
+    └── bar v3.0.0
+
+"#]])
+        .run();
+
+    assert_eq!(p.read_file("Cargo.lock"), p.read_file("Cargo.lock.orig"));
+}
+
+#[cargo_test]
+fn patch_in_real_with_base() {
+    let bar = project()
+        .at("bar")
+        .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
+        .file("src/lib.rs", "pub fn hello() {}")
+        .build();
+    Package::new("bar", "0.5.0").publish();
+
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                    [path-bases]
+                    test = '{}'
+                "#,
+                bar.root().parent().unwrap().display()
+            ),
+        )
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["path-bases"]
+
+                [package]
+                name = "foo"
+                version = "0.5.0"
+                authors = ["wycats@example.com"]
+                edition = "2018"
+
+                [dependencies]
+                bar = "0.5.0"
+
+                [patch.crates-io]
+                bar = { base = 'test', path = 'bar' }
+            "#,
+        )
+        .file("src/lib.rs", "use bar::hello as _;")
+        .build();
+
+    p.cargo("tree")
+        .masquerade_as_nightly_cargo(&["path-bases"])
+        .with_stdout_data(str![[r#"
+foo v0.5.0 ([ROOT]/foo)
+└── bar v0.5.0 ([ROOT]/bar)
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn patch_in_virtual_with_base() {
+    let bar = project()
+        .at("bar")
+        .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
+        .file("src/lib.rs", "pub fn hello() {}")
+        .build();
+    Package::new("bar", "0.5.0").publish();
+
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                    [path-bases]
+                    test = '{}'
+                "#,
+                bar.root().parent().unwrap().display()
+            ),
+        )
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["path-bases"]
+
+                [workspace]
+                members = ["foo"]
+
+                [patch.crates-io]
+                bar = { base = 'test', path = 'bar' }
+            "#,
+        )
+        .file(
+            "foo/Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.5.0"
+                authors = ["wycats@example.com"]
+                edition = "2018"
+
+                [dependencies]
+                bar = "0.5.0"
+            "#,
+        )
+        .file("foo/src/lib.rs", "use bar::hello as _;")
+        .build();
+
+    p.cargo("tree")
+        .masquerade_as_nightly_cargo(&["path-bases"])
+        .with_stdout_data(str![[r#"
+foo v0.5.0 ([ROOT]/foo/foo)
+└── bar v0.5.0 ([ROOT]/bar)
+
+"#]])
         .run();
 }

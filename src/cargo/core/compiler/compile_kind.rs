@@ -3,7 +3,7 @@
 use crate::core::Target;
 use crate::util::errors::CargoResult;
 use crate::util::interning::InternedString;
-use crate::util::{Config, StableHasher};
+use crate::util::{try_canonicalize, GlobalContext, StableHasher};
 use anyhow::Context as _;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -51,7 +51,7 @@ impl CompileKind {
     /// If no targets are given then this returns a single-element vector with
     /// `CompileKind::Host`.
     pub fn from_requested_targets(
-        config: &Config,
+        gctx: &GlobalContext,
         targets: &[String],
     ) -> CargoResult<Vec<CompileKind>> {
         let dedup = |targets: &[String]| {
@@ -70,9 +70,9 @@ impl CompileKind {
             return dedup(targets);
         }
 
-        let kinds = match &config.build_config()?.target {
+        let kinds = match &gctx.build_config()?.target {
             None => Ok(vec![CompileKind::Host]),
-            Some(build_target_config) => dedup(&build_target_config.values(config)?),
+            Some(build_target_config) => dedup(&build_target_config.values(gctx)?),
         };
 
         kinds
@@ -138,8 +138,7 @@ impl CompileTarget {
         // If `name` ends in `.json` then it's likely a custom target
         // specification. Canonicalize the path to ensure that different builds
         // with different paths always produce the same result.
-        let path = Path::new(name)
-            .canonicalize()
+        let path = try_canonicalize(Path::new(name))
             .with_context(|| format!("target path {:?} is not a valid file", name))?;
 
         let name = path
@@ -196,6 +195,6 @@ impl CompileTarget {
                 self.name.hash(&mut hasher);
             }
         }
-        hasher.finish()
+        Hasher::finish(&hasher)
     }
 }

@@ -1,13 +1,15 @@
 //! Tests for progress bar.
 
+use cargo_test_support::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::registry::Package;
+use cargo_test_support::str;
 
 #[cargo_test]
 fn bad_progress_config_unknown_when() {
     let p = project()
         .file(
-            ".cargo/config",
+            ".cargo/config.toml",
             r#"
             [term]
             progress = { when = 'unknown' }
@@ -16,17 +18,15 @@ fn bad_progress_config_unknown_when() {
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("build")
+    p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-[ERROR] error in [..].cargo/config: \
-could not load config key `term.progress.when`
+        .with_stderr_data(str![[r#"
+[ERROR] error in [ROOT]/foo/.cargo/config.toml: could not load config key `term.progress.when`
 
 Caused by:
   unknown variant `unknown`, expected one of `auto`, `never`, `always`
-",
-        )
+
+"#]])
         .run();
 }
 
@@ -34,7 +34,7 @@ Caused by:
 fn bad_progress_config_missing_width() {
     let p = project()
         .file(
-            ".cargo/config",
+            ".cargo/config.toml",
             r#"
             [term]
             progress = { when = 'always' }
@@ -43,13 +43,12 @@ fn bad_progress_config_missing_width() {
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("build")
+    p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-[ERROR] \"always\" progress requires a `width` key
-",
-        )
+        .with_stderr_data(str![[r#"
+[ERROR] "always" progress requires a `width` key
+
+"#]])
         .run();
 }
 
@@ -57,7 +56,7 @@ fn bad_progress_config_missing_width() {
 fn bad_progress_config_missing_when() {
     let p = project()
         .file(
-            ".cargo/config",
+            ".cargo/config.toml",
             r#"
             [term]
             progress = { width = 1000 }
@@ -66,13 +65,15 @@ fn bad_progress_config_missing_when() {
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("build")
+    p.cargo("check")
         .with_status(101)
-        .with_stderr(
-            "\
-error: missing field `when`
-",
-        )
+        .with_stderr_data(str![[r#"
+[ERROR] error in [ROOT]/foo/.cargo/config.toml: could not load config key `term.progress`
+
+Caused by:
+  missing field `when`
+
+"#]])
         .run();
 }
 
@@ -87,7 +88,7 @@ fn always_shows_progress() {
 
     let p = project()
         .file(
-            ".cargo/config",
+            ".cargo/config.toml",
             r#"
             [term]
             progress = { when = 'always', width = 100 }
@@ -110,10 +111,17 @@ fn always_shows_progress() {
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("build")
-        .with_stderr_contains("[DOWNLOADING] [..] crates [..]")
-        .with_stderr_contains("[..][DOWNLOADED] 3 crates ([..]) in [..]")
-        .with_stderr_contains("[BUILDING] [..] [..]/4: [..]")
+    p.cargo("check")
+        .with_stderr_data(
+            str![[r#"
+[DOWNLOADING] [..] crate                                                                              
+[DOWNLOADED] 3 crates ([..]KB) in [..]s
+[BUILDING] [..] [..]/4: [..]
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+...
+"#]]
+            .unordered(),
+        )
         .run();
 }
 
@@ -128,7 +136,7 @@ fn never_progress() {
 
     let p = project()
         .file(
-            ".cargo/config",
+            ".cargo/config.toml",
             r#"
             [term]
             progress = { when = 'never' }
@@ -151,7 +159,7 @@ fn never_progress() {
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("build")
+    p.cargo("check")
         .with_stderr_does_not_contain("[DOWNLOADING] [..] crates [..]")
         .with_stderr_does_not_contain("[..][DOWNLOADED] 3 crates ([..]) in [..]")
         .with_stderr_does_not_contain("[BUILDING] [..] [..]/4: [..]")

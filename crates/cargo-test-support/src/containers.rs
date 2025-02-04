@@ -5,7 +5,7 @@
 //! with the running container.
 //!
 //! Tests using containers must use `#[cargo_test(container_test)]` to disable
-//! them unless the CARGO_CONTAINER_TESTS environment variable is set.
+//! them unless the `CARGO_CONTAINER_TESTS` environment variable is set.
 
 use cargo_util::ProcessBuilder;
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ pub struct ContainerHandle {
     /// This can only be used on Linux. macOS and Windows docker doesn't allow
     /// direct connection to the container.
     pub ip_address: String,
-    /// Port mappings of container_port to host_port for ports exposed via EXPOSE.
+    /// Port mappings of `container_port` to `host_port` for ports exposed via EXPOSE.
     pub port_mappings: HashMap<u16, u16>,
 }
 
@@ -94,7 +94,9 @@ impl Container {
 
         let image_base = self.build_context.file_name().unwrap();
         let image_name = format!("cargo-test-{}", image_base.to_str().unwrap());
-        let _lock = BUILD_LOCK.lock().unwrap();
+        let _lock = BUILD_LOCK
+            .lock()
+            .map_err(|_| panic!("previous docker build failed, unable to run test"));
         ProcessBuilder::new("docker")
             .args(&["build", "--tag", image_name.as_str()])
             .arg(&self.build_context)
@@ -120,6 +122,7 @@ impl Container {
             return;
         }
         let mut ar = tar::Builder::new(Vec::new());
+        ar.sparse(false);
         let files = std::mem::replace(&mut self.files, Vec::new());
         for mut file in files {
             ar.append_data(&mut file.header, &file.path, file.contents.as_slice())

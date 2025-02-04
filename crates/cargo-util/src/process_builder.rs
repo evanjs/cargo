@@ -176,7 +176,7 @@ impl ProcessBuilder {
     /// Sets the `make` jobserver. See the [jobserver crate][jobserver_docs] for
     /// more information.
     ///
-    /// [jobserver_docs]: https://docs.rs/jobserver/0.1.6/jobserver/
+    /// [jobserver_docs]: https://docs.rs/jobserver/latest/jobserver/
     pub fn inherit_jobserver(&mut self, jobserver: &Client) -> &mut Self {
         self.jobserver = Some(jobserver.clone());
         self
@@ -449,7 +449,7 @@ impl ProcessBuilder {
         arg.push(tmp.path());
         let mut cmd = self.build_command_without_args();
         cmd.arg(arg);
-        log::debug!("created argfile at {} for {self}", tmp.path().display());
+        tracing::debug!("created argfile at {} for {self}", tmp.path().display());
 
         let cap = self.get_args().map(|arg| arg.len() + 1).sum::<usize>();
         let mut buf = Vec::with_capacity(cap);
@@ -558,7 +558,7 @@ fn piped(cmd: &mut Command, pipe_stdin: bool) -> &mut Command {
 
 fn close_tempfile_and_log_error(file: NamedTempFile) {
     file.close().unwrap_or_else(|e| {
-        log::warn!("failed to close temporary file: {e}");
+        tracing::warn!("failed to close temporary file: {e}");
     });
 }
 
